@@ -940,6 +940,46 @@ namespace Oxide.Plugins
             LogDebug($"Player {player.displayName} disconnected: {reason}");
         }
         
+        /// <summary>
+        /// Handle player respawn - set spawn position to lobby
+        /// This hook is called when a player is about to respawn after death or joining
+        /// </summary>
+        private object OnPlayerRespawn(BasePlayer player)
+        {
+            if (player == null) return null;
+            
+            // Check if player is in a game mode
+            if (_gameModeSystem != null)
+            {
+                var mode = _gameModeSystem.GetPlayerMode(player.userID);
+                
+                if (mode == GameModeType.Zombies)
+                {
+                    // Zombies mode: teleport to spectate position (handled by GameModeSystem)
+                    return null; // Let default respawn happen, then GameModeSystem will teleport
+                }
+                else if (mode == GameModeType.Normal)
+                {
+                    // Normal mode: respawn in arena
+                    if (_config.ArenaSpawnPositions != null && _config.ArenaSpawnPositions.Count > 0)
+                    {
+                        var spawnPos = _config.ArenaSpawnPositions[UnityEngine.Random.Range(0, _config.ArenaSpawnPositions.Count)];
+                        player.RespawnAt(spawnPos, Quaternion.identity);
+                        return true; // Prevent default spawn
+                    }
+                }
+            }
+            
+            // Default: spawn at lobby position
+            if (_config.LobbySpawnPosition != Vector3.zero)
+            {
+                player.RespawnAt(_config.LobbySpawnPosition, Quaternion.identity);
+                return true; // Prevent default spawn behavior
+            }
+            
+            return null; // Allow default spawn if no lobby position set
+        }
+        
         private void OnEntityDeath(BaseCombatEntity entity, HitInfo info)
         {
             if (entity == null || _tokenEconomy == null) return;
