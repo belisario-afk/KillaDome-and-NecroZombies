@@ -9,7 +9,7 @@ using Newtonsoft.Json;
 // hop-like movement, fire/flies/gore VFX, and CUI wave/stage banners.
 namespace Oxide.Plugins
 {
-    [Info("NecroZombies", "belisario-afk", "2.7.0")]
+    [Info("NecroZombies", "belisario-afk", "2.8.0")]
     [Description("Spawns fast, aggressive scarecrow-based zombies and hellhounds with spawn sets, drip waves, CUI, and horror VFX")]
     public class NecroZombies : RustPlugin
     {
@@ -242,9 +242,11 @@ namespace Oxide.Plugins
 
         private const float RaycastMaxDistance = 200f;
 
-        // Fire & gore VFX
+        // VFX effects
         private const string BurnEffectPrefab = "assets/bundled/prefabs/fx/fire/fire_v3.prefab";
         private const string BloodSlashEffect = "assets/bundled/prefabs/fx/impacts/slash/blood14slash.prefab";
+        // Blood splatter decal for hellhound red appearance
+        private const string BloodSplatterDecal = "assets/bundled/prefabs/fx/decals/blood/decal_blood_splatter_01.prefab";
         // Disabled flies effects - they cause server lag when running continuously
         // private const string FliesMediumEffect = "assets/bundled/prefabs/fx/animals/flies/flies_medium.prefab";
         // private const string FliesLoopEffect = "assets/bundled/prefabs/fx/animals/flies/flies_looping.prefab";
@@ -690,7 +692,7 @@ namespace Oxide.Plugins
                 Puts($"[NecroZombies] Spawned entity type: {entity.GetType().FullName} (hellhound)");
             }
 
-            // Configure wolf as hostile hellhound
+            // Configure wolf as hostile hellhound - NEVER run away, always chase players
             var wolf = entity as BaseNpc;
             if (wolf != null)
             {
@@ -699,38 +701,42 @@ namespace Oxide.Plugins
                 wolf.health = profile.Health;
                 wolf.InitializeHealth(profile.Health, profile.Health);
                 
-                // Make wolf aggressive - target players immediately
+                // Make wolf aggressive - NEVER afraid, ALWAYS attack
                 wolf.SetFact(BaseNpc.Facts.IsAggro, 1);
                 wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
                 wolf.SetFact(BaseNpc.Facts.IsAfraid, 0);
+                wolf.SetFact(BaseNpc.Facts.AfraidRange, 0);
+                wolf.SetFact(BaseNpc.Facts.IsRetreatingToCover, 0);
+                wolf.SetFact(BaseNpc.Facts.IsFleeing, 0);
                 
-                // Find nearest player and set as target
-                var nearestPlayer = FindNearestPlayer(position, 100f);
+                // Find nearest player anywhere on map and set as target
+                var nearestPlayer = FindNearestPlayer(position, 500f);
                 if (nearestPlayer != null)
                 {
                     wolf.AttackTarget = nearestPlayer;
                     wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
                 }
                 
-                // Increase aggression range
-                wolf.Stats.VisionRange = 50f;
-                wolf.Stats.AggressionRange = 50f;
-                wolf.Stats.DeaggroRange = 100f;
+                // Maximum aggression range - wolves will chase across the map
+                wolf.Stats.VisionRange = 200f;
+                wolf.Stats.AggressionRange = 200f;
+                wolf.Stats.DeaggroRange = 500f;  // Never deaggro
             }
 
-            // Set OnFire flag and keep refreshing it
-            if (profile.AlwaysOnFire)
-            {
-                entity.SetFlag(BaseEntity.Flags.OnFire, true);
-                entity.SendNetworkUpdate();
-                
-                // Store reference for fire maintenance
-                _hellhoundsOnFire.Add(entity);
-            }
+            // Store reference for continuous blood effect and aggression maintenance
+            _hellhoundsOnFire.Add(entity);
 
-            if (!string.IsNullOrEmpty(BurnEffectPrefab))
+            // Apply blood splatter decal at multiple heights to cover the whole wolf in red
+            if (!string.IsNullOrEmpty(BloodSplatterDecal))
             {
-                Effect.server.Run(BurnEffectPrefab, entity.transform.position + Vector3.up * 0.1f, Vector3.up, null);
+                // Low (legs/ground level)
+                Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.1f, Vector3.up, null);
+                // Mid (body)
+                Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.4f, Vector3.up, null);
+                // Upper body
+                Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.7f, Vector3.up, null);
+                // Head
+                Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.9f, Vector3.up, null);
             }
 
             return true;
@@ -940,31 +946,38 @@ namespace Oxide.Plugins
                     continue;
                 }
                 
-                // Keep fire flag set
-                if (!entity.HasFlag(BaseEntity.Flags.OnFire))
+                // Apply blood splatter at multiple heights for full red coverage
+                if (!string.IsNullOrEmpty(BloodSplatterDecal))
                 {
-                    entity.SetFlag(BaseEntity.Flags.OnFire, true);
-                    entity.SendNetworkUpdate();
+                    Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.1f, Vector3.up, null);
+                    Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.4f, Vector3.up, null);
+                    Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.7f, Vector3.up, null);
+                    Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.9f, Vector3.up, null);
                 }
                 
-                // Run fire VFX
-                if (!string.IsNullOrEmpty(BurnEffectPrefab))
-                {
-                    Effect.server.Run(BurnEffectPrefab, entity.transform.position + Vector3.up * 0.3f, Vector3.up, null);
-                }
-                
-                // Keep wolf aggressive toward nearest player
+                // Keep wolf aggressive toward nearest player - search entire map
                 var wolf = entity as BaseNpc;
                 if (wolf != null)
                 {
-                    var nearestPlayer = FindNearestPlayer(wolf.transform.position, 50f);
+                    // NEVER let wolf run away or lose aggression
+                    wolf.SetFact(BaseNpc.Facts.IsAggro, 1);
+                    wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
+                    wolf.SetFact(BaseNpc.Facts.IsAfraid, 0);
+                    wolf.SetFact(BaseNpc.Facts.AfraidRange, 0);
+                    wolf.SetFact(BaseNpc.Facts.IsRetreatingToCover, 0);
+                    wolf.SetFact(BaseNpc.Facts.IsFleeing, 0);
+                    
+                    // Find ANY player on the map
+                    var nearestPlayer = FindNearestPlayer(wolf.transform.position, 500f);
                     if (nearestPlayer != null)
                     {
                         wolf.AttackTarget = nearestPlayer;
-                        wolf.SetFact(BaseNpc.Facts.IsAggro, 1);
-                        wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
-                        wolf.SetFact(BaseNpc.Facts.IsAfraid, 0);
                     }
+                    
+                    // Keep maximum aggression stats
+                    wolf.Stats.VisionRange = 200f;
+                    wolf.Stats.AggressionRange = 200f;
+                    wolf.Stats.DeaggroRange = 500f;
                 }
             }
             
