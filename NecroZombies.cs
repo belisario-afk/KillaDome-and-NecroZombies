@@ -9,7 +9,7 @@ using Newtonsoft.Json;
 // hop-like movement, fire/flies/gore VFX, and CUI wave/stage banners.
 namespace Oxide.Plugins
 {
-    [Info("NecroZombies", "belisario-afk", "3.1.0")]
+    [Info("NecroZombies", "belisario-afk", "3.2.0")]
     [Description("Spawns Necro Zombie, Runner, Brute, and Hellhound variants with Black Ops style waves")]
     public class NecroZombies : RustPlugin
     {
@@ -578,22 +578,28 @@ namespace Oxide.Plugins
 
             if (_config.SpawnSets == null || _config.SpawnSets.Count == 0)
             {
-                SendReply(player, "<color=#ffcc55>No spawn sets configured.</color>");
+                SendReply(player, "<color=#ffcc55>No spawn sets configured. Use /zspawnadd <setname> to add spawn points.</color>");
                 return;
             }
 
-            Puts("[NecroZombies] Spawn sets:");
+            SendReply(player, "<color=#00ffff>===== Spawn Sets =====</color>");
             foreach (var kvp in _config.SpawnSets)
             {
-                Puts($"  Set '{kvp.Key}': {kvp.Value.Count} point(s)");
+                SendReply(player, $"<color=#55ff55>Set '{kvp.Key}':</color> {kvp.Value.Count} point(s)");
+                Puts($"[NecroZombies] Set '{kvp.Key}': {kvp.Value.Count} point(s)");
                 int idx = 0;
                 foreach (var p in kvp.Value)
                 {
+                    SendReply(player, $"  <color=#aaaaaa>[{idx}]</color> {p.x:F1}, {p.y:F1}, {p.z:F1}");
                     Puts($"    [{idx++}] {p}");
                 }
             }
-
-            SendReply(player, "<color=#55ff55>Spawn set info printed to server console.</color>");
+            
+            // Show current wave mode status
+            if (_waveModeActive)
+            {
+                SendReply(player, $"<color=#ffff00>Wave mode active:</color> Using spawn set '{_waveSpawnSetName ?? "none (fallback center)"}'");
+            }
         }
 
         #endregion
@@ -1182,18 +1188,38 @@ namespace Oxide.Plugins
             _waveProfileName = profileName;
             _waveSpawnSetName = string.IsNullOrEmpty(spawnSetName) ? null : spawnSetName.ToLower();
 
+            Puts($"[NecroZombies] Starting wave mode - profile: '{profileName}', spawnSet: '{spawnSetName ?? "null"}' -> '{_waveSpawnSetName ?? "null"}'");
+            
             if (_waveSpawnSetName != null)
             {
+                // Debug: list all available spawn sets
+                if (_config.SpawnSets != null && _config.SpawnSets.Count > 0)
+                {
+                    Puts($"[NecroZombies] Available spawn sets: {string.Join(", ", _config.SpawnSets.Keys)}");
+                }
+                else
+                {
+                    Puts("[NecroZombies] No spawn sets in config.");
+                }
+                
                 if (_config.SpawnSets == null || !_config.SpawnSets.ContainsKey(_waveSpawnSetName) ||
                     _config.SpawnSets[_waveSpawnSetName].Count == 0)
                 {
-                    PrintWarning($"[NecroZombies] Spawn set '{_waveSpawnSetName}' not found or empty, falling back to single center.");
+                    PrintWarning($"[NecroZombies] Spawn set '{_waveSpawnSetName}' not found or empty, falling back to single center at {center}.");
                     _waveSpawnSetName = null;
                 }
                 else
                 {
                     Puts($"[NecroZombies] Using spawn set '{_waveSpawnSetName}' with {_config.SpawnSets[_waveSpawnSetName].Count} point(s).");
+                    foreach (var p in _config.SpawnSets[_waveSpawnSetName])
+                    {
+                        Puts($"[NecroZombies]   Point: ({p.x:F1}, {p.y:F1}, {p.z:F1})");
+                    }
                 }
+            }
+            else
+            {
+                Puts($"[NecroZombies] No spawn set specified, using fallback center at {center}.");
             }
 
             _currentWaveZombies.Clear();
