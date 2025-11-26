@@ -938,6 +938,8 @@ namespace Oxide.Plugins
             {
                 if (_telemetry == null) return;
                 
+                var victimSession = GetSession(victim.userID);
+                
                 var attacker = info?.InitiatorPlayer;
                 if (attacker != null && attacker != victim && attacker.IsConnected)
                 {
@@ -950,13 +952,32 @@ namespace Oxide.Plugins
                     LogDebug($"{attacker.displayName} killed {victim.displayName}");
                 }
                 
-                // Respawn victim in lobby after delay
+                // Check if player is in zombies mode - handle differently
+                if (victimSession != null && victimSession.SelectedGameMode == GameMode.Zombies && victimSession.IsInMatch)
+                {
+                    // Zombies mode: spectate until next wave
+                    _gameModeSystem.OnZombiesPlayerDeath(victim);
+                    return;
+                }
+                
+                // Normal mode: Respawn victim in lobby after delay
                 timer.Once(3f, () =>
                 {
                     if (victim != null && victim.IsConnected)
                     {
-                        TeleportToLobby(victim);
-                        victim.Respawn();
+                        // Check if in normal match - respawn in arena
+                        var session = GetSession(victim.userID);
+                        if (session != null && session.SelectedGameMode == GameMode.Normal && session.IsInMatch)
+                        {
+                            TeleportPlayer(victim, _config.NormalArenaPosition);
+                            victim.Respawn();
+                            GiveLoadout(victim);
+                        }
+                        else
+                        {
+                            TeleportToLobby(victim);
+                            victim.Respawn();
+                        }
                     }
                 });
                 return;
@@ -984,6 +1005,15 @@ namespace Oxide.Plugins
                 
                 LogDebug($"{zombieAttacker.displayName} killed a zombie (+{_config.TokensPerZombieKill} tokens)");
             }
+        }
+        
+        /// <summary>
+        /// Hook: Called when NecroZombies wave is complete - respawn spectating players
+        /// </summary>
+        private void OnNecroZombiesWaveComplete(int waveNumber)
+        {
+            LogDebug($"NecroZombies wave {waveNumber} complete - respawning spectators");
+            _gameModeSystem.OnZombiesWaveEnd();
         }
         
         #endregion

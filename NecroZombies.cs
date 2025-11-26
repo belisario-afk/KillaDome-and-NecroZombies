@@ -1532,6 +1532,9 @@ namespace Oxide.Plugins
                 _waveCheckTimer?.Destroy();
                 _waveCheckTimer = null;
 
+                // Notify other plugins that wave is complete (for respawning spectators)
+                Interface.Oxide.CallHook("OnNecroZombiesWaveComplete", _currentWave);
+
                 // Intermission banner between waves
                 ShowStageBanner("WAVE COMPLETE", $"Prepare for Wave {_currentWave + 1}", waves.WaveStartDelay);
                 timer.Once(waves.WaveStartDelay, StartNextWave);
