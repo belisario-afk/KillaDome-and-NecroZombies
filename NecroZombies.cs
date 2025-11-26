@@ -589,6 +589,30 @@ namespace Oxide.Plugins
                 AlwaysOnFire = true
             };
         }
+        
+        /// <summary>
+        /// Find the nearest player to a given position within maxRange
+        /// </summary>
+        private BasePlayer FindNearestPlayer(Vector3 position, float maxRange = 100f)
+        {
+            BasePlayer nearestPlayer = null;
+            float nearestDist = maxRange;
+            
+            foreach (var player in BasePlayer.activePlayerList)
+            {
+                if (player == null || player.IsDead() || player.IsSleeping())
+                    continue;
+                    
+                float dist = Vector3.Distance(player.transform.position, position);
+                if (dist < nearestDist)
+                {
+                    nearestDist = dist;
+                    nearestPlayer = player;
+                }
+            }
+            
+            return nearestPlayer;
+        }
 
         private bool SpawnNecroZombie(Vector3 position, ZombieProfile profile, bool trackForWave)
         {
@@ -685,20 +709,7 @@ namespace Oxide.Plugins
                 wolf.SetFact(BaseNpc.Facts.IsAfraid, 0);
                 
                 // Find nearest player and set as target
-                BasePlayer nearestPlayer = null;
-                float nearestDist = float.MaxValue;
-                foreach (var player in BasePlayer.activePlayerList)
-                {
-                    if (player == null || player.IsDead() || player.IsSleeping())
-                        continue;
-                    float dist = Vector3.Distance(player.transform.position, position);
-                    if (dist < nearestDist)
-                    {
-                        nearestDist = dist;
-                        nearestPlayer = player;
-                    }
-                }
-                
+                var nearestPlayer = FindNearestPlayer(position, 100f);
                 if (nearestPlayer != null)
                 {
                     wolf.AttackTarget = nearestPlayer;
@@ -966,23 +977,7 @@ namespace Oxide.Plugins
                 var wolf = entity as BaseNpc;
                 if (wolf != null)
                 {
-                    // Find nearest player and retarget
-                    BasePlayer nearestPlayer = null;
-                    float nearestDist = float.MaxValue;
-                    Vector3 wolfPos = wolf.transform.position;
-                    
-                    foreach (var player in BasePlayer.activePlayerList)
-                    {
-                        if (player == null || player.IsDead() || player.IsSleeping())
-                            continue;
-                        float dist = Vector3.Distance(player.transform.position, wolfPos);
-                        if (dist < nearestDist && dist < 50f)
-                        {
-                            nearestDist = dist;
-                            nearestPlayer = player;
-                        }
-                    }
-                    
+                    var nearestPlayer = FindNearestPlayer(wolf.transform.position, 50f);
                     if (nearestPlayer != null)
                     {
                         wolf.AttackTarget = nearestPlayer;
