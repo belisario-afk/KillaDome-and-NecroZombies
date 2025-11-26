@@ -27,7 +27,7 @@ using System.IO;
 
 namespace Oxide.Plugins
 {
-    [Info("KillaDome", "KillaDome", "1.2.0")]
+    [Info("KillaDome", "KillaDome", "1.3.0")]
     [Description("Full COD-style server experience with lobby, loadouts, progression, and Black Ops zombies integration via NecroZombies")]
     public class KillaDome : RustPlugin
     {
@@ -612,6 +612,12 @@ namespace Oxide.Plugins
             
             [JsonProperty("Enable Mode Confirmation UI")]
             public bool EnableModeConfirmationUI { get; set; } = true;
+            
+            [JsonProperty("Enable Teleporter Hex Tiles")]
+            public bool EnableTeleporterHexTiles { get; set; } = true;
+            
+            [JsonProperty("Normal Respawn Delay Seconds")]
+            public float NormalRespawnDelay { get; set; } = 5.0f;
         }
         
         protected override void LoadDefaultConfig()
@@ -768,6 +774,9 @@ namespace Oxide.Plugins
             // Start teleporter zone check timer
             _teleporterCheckTimer = timer.Every(0.5f, () => CheckTeleporterZones());
             
+            // Spawn teleporter hex tiles after a short delay
+            timer.Once(3f, () => _gameModeSystem.SpawnTeleporterTiles());
+            
             // Check NecroZombies integration
             if (_config.EnableZombiesMode)
             {
@@ -850,6 +859,9 @@ namespace Oxide.Plugins
         
         private void Unload()
         {
+            // Clean up teleporter hex tiles
+            _gameModeSystem?.CleanupTeleporterTiles();
+            
             // Clean up all UI
             foreach (var player in BasePlayer.activePlayerList)
             {
@@ -1561,12 +1573,113 @@ namespace Oxide.Plugins
                     }
                     break;
                     
+                case "setteleporter":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to set teleporters.");
+                        break;
+                    }
+                    
+                    if (args.Length < 2)
+                    {
+                        SendReply(player, "Usage: /kd setteleporter <zombies|normal>\n" +
+                            "Sets the teleporter position to your current location.");
+                        break;
+                    }
+                    
+                    string teleporterType = args[1].ToLower();
+                    Vector3 playerPos = player.transform.position;
+                    
+                    if (teleporterType == "zombies")
+                    {
+                        _config.ZombiesTeleporterPosition = playerPos;
+                        SaveConfig();
+                        _gameModeSystem.RefreshTeleporterTiles();
+                        SendReply(player, $"<color=#FF4444>Zombies teleporter</color> set to {playerPos}");
+                    }
+                    else if (teleporterType == "normal")
+                    {
+                        _config.NormalTeleporterPosition = playerPos;
+                        SaveConfig();
+                        _gameModeSystem.RefreshTeleporterTiles();
+                        SendReply(player, $"<color=#44FF44>Normal teleporter</color> set to {playerPos}");
+                    }
+                    else
+                    {
+                        SendReply(player, "Unknown teleporter type. Use: zombies, normal");
+                    }
+                    break;
+                    
+                case "setspectate":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to set spectate position.");
+                        break;
+                    }
+                    
+                    _config.SpectatePosition = player.transform.position;
+                    SaveConfig();
+                    SendReply(player, $"<color=#FFD700>Spectate position</color> set to {player.transform.position}");
+                    break;
+                    
+                case "setarena":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to set arena positions.");
+                        break;
+                    }
+                    
+                    if (args.Length < 2)
+                    {
+                        SendReply(player, "Usage: /kd setarena <zombies|normal>\n" +
+                            "Sets the arena spawn position for that mode.");
+                        break;
+                    }
+                    
+                    string arenaType = args[1].ToLower();
+                    
+                    if (arenaType == "zombies")
+                    {
+                        _config.ZombiesArenaPosition = player.transform.position;
+                        SaveConfig();
+                        SendReply(player, $"<color=#FF4444>Zombies arena</color> set to {player.transform.position}");
+                    }
+                    else if (arenaType == "normal")
+                    {
+                        _config.NormalArenaPosition = player.transform.position;
+                        SaveConfig();
+                        SendReply(player, $"<color=#44FF44>Normal arena</color> set to {player.transform.position}");
+                    }
+                    else
+                    {
+                        SendReply(player, "Unknown arena type. Use: zombies, normal");
+                    }
+                    break;
+                    
+                case "spawntiles":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to spawn tiles.");
+                        break;
+                    }
+                    
+                    _gameModeSystem.RefreshTeleporterTiles();
+                    SendReply(player, "<color=#00FF00>Teleporter hex tiles refreshed!</color>");
+                    break;
+                    
                 case "help":
                     SendReply(player, "KillaDome - Full COD Experience\n" +
                         "Use /kd open to access the lobby\n" +
                         "/kd mode - Check current game mode\n" +
                         "Walk into teleporter zones to join game modes!\n" +
-                        (player.IsAdmin ? "/kd zombies - Control zombie wave mode\n/kd endzombies - End zombies match\n/kd endnormal - End normal match" : ""));
+                        (player.IsAdmin ? "\n<color=#FFD700>Admin Commands:</color>\n" +
+                            "/kd setteleporter <zombies|normal> - Set teleporter position\n" +
+                            "/kd setspectate - Set spectate/skybox position\n" +
+                            "/kd setarena <zombies|normal> - Set arena spawn position\n" +
+                            "/kd spawntiles - Refresh hex tile teleporters\n" +
+                            "/kd zombies - Control zombie wave mode\n" +
+                            "/kd endzombies - End zombies match\n" +
+                            "/kd endnormal - End normal match" : ""));
                     break;
                     
                 default:
@@ -5434,10 +5547,118 @@ namespace Oxide.Plugins
             private bool _zombiesMatchActive = false;
             private bool _normalMatchActive = false;
             
+            // Teleporter hex tiles
+            private List<BaseEntity> _teleporterTiles = new List<BaseEntity>();
+            
+            // Hex tile prefabs
+            private const string HEX_TILE_RED = "assets/prefabs/misc/twitch/hex-a-gone/hexagontile_red.entity.prefab";
+            private const string HEX_TILE_BLUE = "assets/prefabs/misc/twitch/hex-a-gone/hexagontile_blue.entity.prefab";
+            
             internal GameModeSystem(KillaDome plugin, PluginConfig config)
             {
                 _plugin = plugin;
                 _config = config;
+            }
+            
+            /// <summary>
+            /// Spawn hex tiles at teleporter positions
+            /// </summary>
+            public void SpawnTeleporterTiles()
+            {
+                if (!_config.EnableTeleporterHexTiles) return;
+                
+                // Cleanup old tiles first
+                CleanupTeleporterTiles();
+                
+                // Spawn zombies teleporter tile (red)
+                SpawnHexTileCluster(_config.ZombiesTeleporterPosition, HEX_TILE_RED, 7);
+                
+                // Spawn normal teleporter tile (blue)
+                SpawnHexTileCluster(_config.NormalTeleporterPosition, HEX_TILE_BLUE, 7);
+                
+                _plugin.LogDebug($"Spawned teleporter hex tiles at Zombies: {_config.ZombiesTeleporterPosition} and Normal: {_config.NormalTeleporterPosition}");
+            }
+            
+            /// <summary>
+            /// Spawn a cluster of hex tiles in a pattern
+            /// </summary>
+            private void SpawnHexTileCluster(Vector3 center, string prefab, int count)
+            {
+                // Center tile
+                SpawnHexTile(center, prefab);
+                
+                // Surrounding tiles in a hex pattern
+                float spacing = 1.0f;
+                float[] angles = { 0, 60, 120, 180, 240, 300 };
+                
+                for (int i = 0; i < Math.Min(count - 1, 6); i++)
+                {
+                    float angleRad = angles[i] * Mathf.Deg2Rad;
+                    Vector3 offset = new Vector3(Mathf.Cos(angleRad) * spacing, 0, Mathf.Sin(angleRad) * spacing);
+                    SpawnHexTile(center + offset, prefab);
+                }
+            }
+            
+            /// <summary>
+            /// Spawn a single hex tile entity
+            /// </summary>
+            private void SpawnHexTile(Vector3 position, string prefab)
+            {
+                try
+                {
+                    var entity = GameManager.server.CreateEntity(prefab, position, Quaternion.identity);
+                    if (entity == null)
+                    {
+                        _plugin.PrintWarning($"Failed to create hex tile entity at {position}");
+                        return;
+                    }
+                    
+                    entity.Spawn();
+                    
+                    // Make it static and invincible
+                    var baseCombat = entity.GetComponent<BaseCombatEntity>();
+                    if (baseCombat != null)
+                    {
+                        baseCombat.SetHealth(float.MaxValue);
+                    }
+                    
+                    // Disable physics/decay
+                    var stabilityEntity = entity.GetComponent<StabilityEntity>();
+                    if (stabilityEntity != null)
+                    {
+                        stabilityEntity.grounded = true;
+                    }
+                    
+                    _teleporterTiles.Add(entity);
+                }
+                catch (Exception ex)
+                {
+                    _plugin.PrintError($"Error spawning hex tile: {ex.Message}");
+                }
+            }
+            
+            /// <summary>
+            /// Cleanup and remove all teleporter tiles
+            /// </summary>
+            public void CleanupTeleporterTiles()
+            {
+                foreach (var tile in _teleporterTiles)
+                {
+                    if (tile != null && !tile.IsDestroyed)
+                    {
+                        tile.Kill();
+                    }
+                }
+                _teleporterTiles.Clear();
+            }
+            
+            /// <summary>
+            /// Refresh teleporter tiles (cleanup and respawn)
+            /// </summary>
+            public void RefreshTeleporterTiles()
+            {
+                CleanupTeleporterTiles();
+                SpawnTeleporterTiles();
             }
             
             /// <summary>
