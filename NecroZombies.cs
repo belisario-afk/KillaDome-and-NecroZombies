@@ -9,7 +9,7 @@ using Newtonsoft.Json;
 // hop-like movement, fire/flies/gore VFX, and CUI wave/stage banners.
 namespace Oxide.Plugins
 {
-    [Info("NecroZombies", "belisario-afk", "2.3.0")]
+    [Info("NecroZombies", "belisario-afk", "2.4.0")]
     [Description("Spawns fast, aggressive scarecrow-based zombies and hellhounds with spawn sets, drip waves, CUI, and horror VFX")]
     public class NecroZombies : RustPlugin
     {
@@ -254,8 +254,11 @@ namespace Oxide.Plugins
         private const string WaveBannerPanel = "NecroWaveBanner.Panel";
         private const string WaveBannerTitle = "NecroWaveBanner.Title";
         private const string WaveBannerSubtitle = "NecroWaveBanner.Subtitle";
+        private const string WaveHudPanel = "NecroWaveHud.Panel";
+        private const string WaveHudText = "NecroWaveHud.Text";
 
         private readonly HashSet<BaseEntity> _activeZombies = new HashSet<BaseEntity>();
+        private readonly HashSet<BaseEntity> _hellhoundsOnFire = new HashSet<BaseEntity>();
 
         // Wave state
         private bool _waveModeActive;
@@ -274,6 +277,8 @@ namespace Oxide.Plugins
         private Timer _waveSpawnTimer;
         private Timer _waveCheckTimer;
         private Timer _hopTimer;
+        private Timer _hellhoundTimer;
+        private Timer _waveHudTimer;
 
         private bool _loggedTypeOnce;
 
@@ -285,12 +290,19 @@ namespace Oxide.Plugins
         {
             Puts($"[NecroZombies] Using zombie prefab: {ZombiePrefab}");
             _hopTimer = timer.Every(1f, HopTick);
+            _hellhoundTimer = timer.Every(0.5f, HellhoundTick);
         }
 
         private void Unload()
         {
             _hopTimer?.Destroy();
             _hopTimer = null;
+            
+            _hellhoundTimer?.Destroy();
+            _hellhoundTimer = null;
+            
+            _waveHudTimer?.Destroy();
+            _waveHudTimer = null;
 
             _waveSpawnTimer?.Destroy();
             _waveSpawnTimer = null;
@@ -299,6 +311,7 @@ namespace Oxide.Plugins
             _waveCheckTimer = null;
 
             DestroyWaveBannerForAll();
+            DestroyWaveHudForAll();
             KillAllZombiesInternal();
         }
 
@@ -313,6 +326,9 @@ namespace Oxide.Plugins
 
             if (_currentWaveZombies.Contains(be))
                 _currentWaveZombies.Remove(be);
+            
+            if (_hellhoundsOnFire.Contains(be))
+                _hellhoundsOnFire.Remove(be);
         }
 
         private void OnEntityTakeDamage(BaseCombatEntity entity, HitInfo info)
@@ -654,10 +670,55 @@ namespace Oxide.Plugins
                 Puts($"[NecroZombies] Spawned entity type: {entity.GetType().FullName} (hellhound)");
             }
 
+            // Configure wolf as hostile hellhound
+            var wolf = entity as BaseNpc;
+            if (wolf != null)
+            {
+                // Set health
+                wolf.startHealth = profile.Health;
+                wolf.health = profile.Health;
+                wolf.InitializeHealth(profile.Health, profile.Health);
+                
+                // Make wolf aggressive - target players immediately
+                wolf.SetFact(BaseNpc.Facts.IsAggro, 1);
+                wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
+                wolf.SetFact(BaseNpc.Facts.IsAfraid, 0);
+                
+                // Find nearest player and set as target
+                BasePlayer nearestPlayer = null;
+                float nearestDist = float.MaxValue;
+                foreach (var player in BasePlayer.activePlayerList)
+                {
+                    if (player == null || player.IsDead() || player.IsSleeping())
+                        continue;
+                    float dist = Vector3.Distance(player.transform.position, position);
+                    if (dist < nearestDist)
+                    {
+                        nearestDist = dist;
+                        nearestPlayer = player;
+                    }
+                }
+                
+                if (nearestPlayer != null)
+                {
+                    wolf.AttackTarget = nearestPlayer;
+                    wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
+                }
+                
+                // Increase aggression range
+                wolf.Stats.VisionRange = 50f;
+                wolf.Stats.AggressionRange = 50f;
+                wolf.Stats.DeaggroRange = 100f;
+            }
+
+            // Set OnFire flag and keep refreshing it
             if (profile.AlwaysOnFire)
             {
                 entity.SetFlag(BaseEntity.Flags.OnFire, true);
                 entity.SendNetworkUpdate();
+                
+                // Store reference for fire maintenance
+                _hellhoundsOnFire.Add(entity);
             }
 
             if (!string.IsNullOrEmpty(BurnEffectPrefab))
@@ -670,9 +731,6 @@ namespace Oxide.Plugins
             {
                 Effect.server.Run(FliesMediumEffect, entity.transform.position + Vector3.up * 0.5f, Vector3.up, null);
             }
-
-            // Most wolf prefabs are BaseNpc; if you want to directly tweak HP/speed we can experiment further.
-            // For now we rely on base stats + AlwaysOnFire VFX.
 
             return true;
         }
@@ -771,6 +829,7 @@ namespace Oxide.Plugins
 
             _activeZombies.Clear();
             _currentWaveZombies.Clear();
+            _hellhoundsOnFire.Clear();
             _currentWaveSpawned = 0;
             _currentWaveTotalToSpawn = 0;
             return count;
@@ -874,6 +933,71 @@ namespace Oxide.Plugins
                 npc.SendNetworkUpdateImmediate();
             }
         }
+        
+        private void HellhoundTick()
+        {
+            if (_hellhoundsOnFire.Count == 0)
+                return;
+            
+            var toRemove = new List<BaseEntity>();
+            
+            foreach (var entity in _hellhoundsOnFire)
+            {
+                if (entity == null || entity.IsDestroyed)
+                {
+                    toRemove.Add(entity);
+                    continue;
+                }
+                
+                // Keep fire flag set
+                if (!entity.HasFlag(BaseEntity.Flags.OnFire))
+                {
+                    entity.SetFlag(BaseEntity.Flags.OnFire, true);
+                    entity.SendNetworkUpdate();
+                }
+                
+                // Run fire VFX
+                if (!string.IsNullOrEmpty(BurnEffectPrefab))
+                {
+                    Effect.server.Run(BurnEffectPrefab, entity.transform.position + Vector3.up * 0.3f, Vector3.up, null);
+                }
+                
+                // Keep wolf aggressive toward nearest player
+                var wolf = entity as BaseNpc;
+                if (wolf != null)
+                {
+                    // Find nearest player and retarget
+                    BasePlayer nearestPlayer = null;
+                    float nearestDist = float.MaxValue;
+                    Vector3 wolfPos = wolf.transform.position;
+                    
+                    foreach (var player in BasePlayer.activePlayerList)
+                    {
+                        if (player == null || player.IsDead() || player.IsSleeping())
+                            continue;
+                        float dist = Vector3.Distance(player.transform.position, wolfPos);
+                        if (dist < nearestDist && dist < 50f)
+                        {
+                            nearestDist = dist;
+                            nearestPlayer = player;
+                        }
+                    }
+                    
+                    if (nearestPlayer != null)
+                    {
+                        wolf.AttackTarget = nearestPlayer;
+                        wolf.SetFact(BaseNpc.Facts.IsAggro, 1);
+                        wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
+                        wolf.SetFact(BaseNpc.Facts.IsAfraid, 0);
+                    }
+                }
+            }
+            
+            foreach (var entity in toRemove)
+            {
+                _hellhoundsOnFire.Remove(entity);
+            }
+        }
 
         #endregion
 
@@ -921,6 +1045,10 @@ namespace Oxide.Plugins
             _waveSpawnTimer = null;
             _waveCheckTimer?.Destroy();
             _waveCheckTimer = null;
+            
+            // Start persistent wave HUD updates
+            _waveHudTimer?.Destroy();
+            _waveHudTimer = timer.Every(1f, UpdateWaveHud);
 
             StartNextWave();
             return true;
@@ -935,12 +1063,16 @@ namespace Oxide.Plugins
 
             _waveCheckTimer?.Destroy();
             _waveCheckTimer = null;
+            
+            _waveHudTimer?.Destroy();
+            _waveHudTimer = null;
 
             _currentWaveZombies.Clear();
             _currentWaveSpawned = 0;
             _currentWaveTotalToSpawn = 0;
 
             DestroyWaveBannerForAll();
+            DestroyWaveHudForAll();
         }
 
         private void StartNextWave()
@@ -1252,6 +1384,114 @@ namespace Oxide.Plugins
             {
                 DestroyWaveBanner(player);
             }
+        }
+        
+        // Persistent Wave HUD showing current wave and zombies remaining
+        private void UpdateWaveHud()
+        {
+            if (!_waveModeActive)
+            {
+                DestroyWaveHudForAll();
+                return;
+            }
+            
+            int aliveZombies = 0;
+            foreach (var be in _currentWaveZombies)
+            {
+                if (be != null && !be.IsDestroyed)
+                    aliveZombies++;
+            }
+            
+            bool isHellhoundWave = IsHellhoundWave(_currentWave);
+            string waveType = isHellhoundWave ? "HELLHOUND WAVE" : "WAVE";
+            string hudText = $"<color=#ff4444>{waveType} {_currentWave}</color>\n<color=#ffffff>Zombies: {aliveZombies}</color>";
+            
+            string json = BuildWaveHudJson(hudText);
+            
+            foreach (var player in BasePlayer.activePlayerList)
+            {
+                if (player == null || !player.IsConnected)
+                    continue;
+                
+                DestroyWaveHud(player);
+                CommunityEntity.ServerInstance.ClientRPCEx(
+                    new Network.SendInfo { connection = player.net.connection },
+                    null,
+                    "AddUI",
+                    json
+                );
+            }
+        }
+        
+        private void DestroyWaveHud(BasePlayer player)
+        {
+            if (player == null || !player.IsConnected)
+                return;
+            
+            CommunityEntity.ServerInstance.ClientRPCEx(
+                new Network.SendInfo { connection = player.net.connection },
+                null,
+                "DestroyUI",
+                WaveHudPanel
+            );
+        }
+        
+        private void DestroyWaveHudForAll()
+        {
+            foreach (var player in BasePlayer.activePlayerList)
+            {
+                DestroyWaveHud(player);
+            }
+        }
+        
+        private string BuildWaveHudJson(string text)
+        {
+            var container = new CuiElementContainer();
+            
+            // Small panel in top-right corner
+            var panel = new CuiElement
+            {
+                Name = WaveHudPanel,
+                Parent = "Hud",
+                Components =
+                {
+                    new CuiImageComponent
+                    {
+                        Color = "0 0 0 0.7"
+                    },
+                    new CuiRectTransformComponent
+                    {
+                        AnchorMin = "0.85 0.92",
+                        AnchorMax = "0.99 0.99"
+                    }
+                }
+            };
+            container.elements.Add(panel);
+            
+            // Text
+            var textElement = new CuiElement
+            {
+                Name = WaveHudText,
+                Parent = WaveHudPanel,
+                Components =
+                {
+                    new CuiTextComponent
+                    {
+                        Text = text,
+                        FontSize = 14,
+                        Align = (int)TextAnchor.MiddleCenter,
+                        Color = "1 1 1 1"
+                    },
+                    new CuiRectTransformComponent
+                    {
+                        AnchorMin = "0.05 0.05",
+                        AnchorMax = "0.95 0.95"
+                    }
+                }
+            };
+            container.elements.Add(textElement);
+            
+            return JsonConvert.SerializeObject(container);
         }
 
         private string BuildWaveBannerJson(string title, string subtitle)
