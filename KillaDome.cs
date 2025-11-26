@@ -27,7 +27,7 @@ using System.IO;
 
 namespace Oxide.Plugins
 {
-    [Info("KillaDome", "KillaDome", "1.1.0")]
+    [Info("KillaDome", "KillaDome", "1.2.0")]
     [Description("Full COD-style server experience with lobby, loadouts, progression, and Black Ops zombies integration via NecroZombies")]
     public class KillaDome : RustPlugin
     {
@@ -41,6 +41,7 @@ namespace Oxide.Plugins
         
         private DomeManager _domeManager;
         private ZombieIntegration _zombieIntegration;
+        private GameModeSystem _gameModeSystem;
         private LobbyUI _lobbyUI;
         private LoadoutEditor _loadoutEditor;
         private AttachmentSystem _attachmentSystem;
@@ -59,6 +60,9 @@ namespace Oxide.Plugins
         
         private const string PERMISSION_ADMIN = "killadome.admin";
         private const string PERMISSION_VIP = "killadome.vip";
+        
+        // Teleporter zone check timer
+        private Timer _teleporterCheckTimer;
         
         #endregion
         
@@ -586,6 +590,28 @@ namespace Oxide.Plugins
             
             [JsonProperty("Tokens Per Zombie Kill")]
             public int TokensPerZombieKill { get; set; } = 5;
+            
+            // ===== GAME MODE TELEPORTER SYSTEM =====
+            [JsonProperty("Zombies Teleporter Position")]
+            public Vector3 ZombiesTeleporterPosition { get; set; } = new Vector3(10, 100, 0);
+            
+            [JsonProperty("Normal Teleporter Position")]
+            public Vector3 NormalTeleporterPosition { get; set; } = new Vector3(-10, 100, 0);
+            
+            [JsonProperty("Teleporter Radius")]
+            public float TeleporterRadius { get; set; } = 2.0f;
+            
+            [JsonProperty("Spectate Position (Skybox)")]
+            public Vector3 SpectatePosition { get; set; } = new Vector3(0, 500, 0);
+            
+            [JsonProperty("Zombies Arena Position")]
+            public Vector3 ZombiesArenaPosition { get; set; } = new Vector3(0, 100, 1000);
+            
+            [JsonProperty("Normal Arena Position")]
+            public Vector3 NormalArenaPosition { get; set; } = new Vector3(0, 100, 500);
+            
+            [JsonProperty("Enable Mode Confirmation UI")]
+            public bool EnableModeConfirmationUI { get; set; } = true;
         }
         
         protected override void LoadDefaultConfig()
@@ -726,6 +752,7 @@ namespace Oxide.Plugins
             _domeManager = new DomeManager(this, _config);
             _telemetry = new TelemetrySystem(this);
             _zombieIntegration = new ZombieIntegration(this, _config);
+            _gameModeSystem = new GameModeSystem(this, _config);
             
             LogDebug("KillaDome initialized successfully");
         }
@@ -738,6 +765,9 @@ namespace Oxide.Plugins
             // Load images after server is ready
             timer.Once(5f, () => LoadImages());
             
+            // Start teleporter zone check timer
+            _teleporterCheckTimer = timer.Every(0.5f, () => CheckTeleporterZones());
+            
             // Check NecroZombies integration
             if (_config.EnableZombiesMode)
             {
@@ -748,6 +778,26 @@ namespace Oxide.Plugins
                 else
                 {
                     Puts("NecroZombies integration active! Black Ops zombies mode enabled.");
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Check if any players are in teleporter zones
+        /// </summary>
+        private void CheckTeleporterZones()
+        {
+            foreach (var player in BasePlayer.activePlayerList)
+            {
+                if (player == null || !player.IsConnected) continue;
+                
+                var session = GetSession(player.userID);
+                if (session == null || session.IsInMatch) continue;
+                
+                GameMode zone = _gameModeSystem.GetTeleporterZone(player.transform.position);
+                if (zone != GameMode.None)
+                {
+                    _gameModeSystem.OnPlayerEnterTeleporter(player, zone);
                 }
             }
         }
@@ -965,6 +1015,23 @@ namespace Oxide.Plugins
             player.Teleport(spawnPos);
             
             // Apply loadout when entering arena
+            ApplyLoadout(player);
+        }
+        
+        /// <summary>
+        /// Teleport player to specific position
+        /// </summary>
+        private void TeleportPlayer(BasePlayer player, Vector3 position)
+        {
+            if (player == null || !player.IsConnected) return;
+            player.Teleport(position);
+        }
+        
+        /// <summary>
+        /// Give player their loadout (wrapper for ApplyLoadout)
+        /// </summary>
+        private void GiveLoadout(BasePlayer player)
+        {
             ApplyLoadout(player);
         }
         
@@ -1355,6 +1422,7 @@ namespace Oxide.Plugins
                 SendReply(player, "KillaDome Commands:\n" +
                     "/kd open - Open lobby UI\n" +
                     "/kd stats - View your stats\n" +
+                    "/kd mode - Check current game mode\n" +
                     "/kd help - Show this help");
                 return;
             }
@@ -1372,6 +1440,40 @@ namespace Oxide.Plugins
                         SendReply(player, $"Blood Tokens: {session.Profile.Tokens}\n" +
                             $"VIP Status: {(session.Profile.IsVIP ? "Active" : "Inactive")}");
                     }
+                    break;
+                    
+                case "mode":
+                    var modeSession = GetSession(player.userID);
+                    if (modeSession != null)
+                    {
+                        string currentMode = modeSession.SelectedGameMode == GameMode.None ? "Lobby" : modeSession.SelectedGameMode.ToString();
+                        bool inMatch = modeSession.IsInMatch;
+                        bool spectating = modeSession.IsSpectating;
+                        
+                        SendReply(player, $"<color=#FFD700>Current Mode:</color> {currentMode}\n" +
+                            $"In Match: {(inMatch ? "<color=#00ff00>Yes</color>" : "<color=#ff5555>No</color>")}\n" +
+                            (spectating ? "<color=#FF8800>Spectating until next wave</color>" : ""));
+                    }
+                    break;
+                
+                case "endzombies":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to end matches.");
+                        break;
+                    }
+                    _gameModeSystem.EndZombiesMatch();
+                    SendReply(player, "<color=#FF4444>Zombies match ended!</color>");
+                    break;
+                    
+                case "endnormal":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to end matches.");
+                        break;
+                    }
+                    _gameModeSystem.EndNormalMatch();
+                    SendReply(player, "<color=#44FF44>Normal match ended!</color>");
                     break;
                     
                 case "zombies":
@@ -1432,7 +1534,9 @@ namespace Oxide.Plugins
                 case "help":
                     SendReply(player, "KillaDome - Full COD Experience\n" +
                         "Use /kd open to access the lobby\n" +
-                        (player.IsAdmin ? "/kd zombies - Control zombie wave mode" : ""));
+                        "/kd mode - Check current game mode\n" +
+                        "Walk into teleporter zones to join game modes!\n" +
+                        (player.IsAdmin ? "/kd zombies - Control zombie wave mode\n/kd endzombies - End zombies match\n/kd endnormal - End normal match" : ""));
                     break;
                     
                 default:
@@ -1444,6 +1548,30 @@ namespace Oxide.Plugins
         #endregion
         
         #region UI Console Commands
+        
+        [ConsoleCommand("kd.confirmmode")]
+        private void CmdConfirmMode(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !arg.HasArgs(1)) return;
+            
+            int modeInt;
+            if (!int.TryParse(arg.Args[0], out modeInt)) return;
+            
+            GameMode mode = (GameMode)modeInt;
+            if (mode != GameMode.Zombies && mode != GameMode.Normal) return;
+            
+            _gameModeSystem.ConfirmModeSelection(player, mode);
+        }
+        
+        [ConsoleCommand("kd.cancelmode")]
+        private void CmdCancelMode(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            
+            _gameModeSystem.CloseConfirmationUI(player);
+        }
         
         [ConsoleCommand("killadome.close")]
         private void CmdUIClose(ConsoleSystem.Arg arg)
@@ -2302,6 +2430,16 @@ namespace Oxide.Plugins
         
         #region Data Models
         
+        /// <summary>
+        /// Game mode enum for teleporter selection
+        /// </summary>
+        public enum GameMode
+        {
+            None,       // In lobby, no mode selected
+            Zombies,    // Black Ops Zombies mode
+            Normal      // Normal PvP/Deathmatch mode
+        }
+        
         internal class PlayerSession
         {
             public BasePlayer Player { get; set; }
@@ -2318,6 +2456,12 @@ namespace Oxide.Plugins
             public DateTime LastDiceGame { get; set; } // Cooldown for dice game
             public string SelectedLoadoutTab { get; set; } // "weapons" or "outfit"
             
+            // ===== GAME MODE TELEPORTER SYSTEM =====
+            public GameMode SelectedGameMode { get; set; } // Which game mode the player selected
+            public bool IsSpectating { get; set; } // True if player is spectating (zombies mode waiting for respawn)
+            public bool CanLeaveMatch { get; set; } // Whether player can leave (false during match)
+            public DateTime LastTeleporterEntry { get; set; } // Prevent spam entry
+            
             internal PlayerSession(BasePlayer player, PlayerProfile profile)
             {
                 Player = player;
@@ -2330,6 +2474,9 @@ namespace Oxide.Plugins
                 SkinsStorePage = 0; // Start at first page
                 SelectedGunForSkins = ""; // Will default to first gun when opening skin store
                 SelectedLoadoutTab = "weapons"; // Default to weapons tab
+                SelectedGameMode = GameMode.None; // Not in any game mode
+                IsSpectating = false;
+                CanLeaveMatch = true;
             }
         }
         
@@ -5229,6 +5376,399 @@ namespace Oxide.Plugins
                 {
                     _plugin.PrintError($"Failed to show game over: {ex.Message}");
                 }
+            }
+        }
+        
+        #endregion
+        
+        #region Module: GameModeSystem
+        
+        /// <summary>
+        /// Manages teleporter-based game mode selection.
+        /// Players step into teleporters to join Zombies or Normal mode.
+        /// </summary>
+        internal class GameModeSystem
+        {
+            private KillaDome _plugin;
+            private PluginConfig _config;
+            
+            // Track players in each mode
+            private HashSet<ulong> _zombiesQueue = new HashSet<ulong>();
+            private HashSet<ulong> _normalQueue = new HashSet<ulong>();
+            private HashSet<ulong> _spectatingPlayers = new HashSet<ulong>();
+            
+            // Track confirmation UI per player
+            private Dictionary<ulong, GameMode> _pendingConfirmation = new Dictionary<ulong, GameMode>();
+            
+            // Active game states
+            private bool _zombiesMatchActive = false;
+            private bool _normalMatchActive = false;
+            
+            internal GameModeSystem(KillaDome plugin, PluginConfig config)
+            {
+                _plugin = plugin;
+                _config = config;
+            }
+            
+            /// <summary>
+            /// Check if a player is within a teleporter zone
+            /// </summary>
+            public GameMode GetTeleporterZone(Vector3 position)
+            {
+                float zombiesDist = Vector3.Distance(position, _config.ZombiesTeleporterPosition);
+                float normalDist = Vector3.Distance(position, _config.NormalTeleporterPosition);
+                
+                if (zombiesDist <= _config.TeleporterRadius)
+                    return GameMode.Zombies;
+                if (normalDist <= _config.TeleporterRadius)
+                    return GameMode.Normal;
+                    
+                return GameMode.None;
+            }
+            
+            /// <summary>
+            /// Handle player entering a teleporter zone
+            /// </summary>
+            public void OnPlayerEnterTeleporter(BasePlayer player, GameMode mode)
+            {
+                var session = _plugin.GetSession(player.userID);
+                if (session == null) return;
+                
+                // Prevent spam entry
+                if ((DateTime.UtcNow - session.LastTeleporterEntry).TotalSeconds < 1.0)
+                    return;
+                session.LastTeleporterEntry = DateTime.UtcNow;
+                
+                // Don't allow if already in match
+                if (session.IsInMatch)
+                {
+                    _plugin.SendReply(player, "<color=#FF4444>You cannot leave during a match!</color>");
+                    return;
+                }
+                
+                if (_config.EnableModeConfirmationUI)
+                {
+                    // Show confirmation UI
+                    _pendingConfirmation[player.userID] = mode;
+                    ShowConfirmationUI(player, mode);
+                }
+                else
+                {
+                    // Direct join without confirmation
+                    ConfirmModeSelection(player, mode);
+                }
+            }
+            
+            /// <summary>
+            /// Show the mode selection confirmation UI
+            /// </summary>
+            private void ShowConfirmationUI(BasePlayer player, GameMode mode)
+            {
+                string modeColor = mode == GameMode.Zombies ? "#FF4444" : "#44FF44";
+                string modeName = mode == GameMode.Zombies ? "ZOMBIES MODE" : "NORMAL MODE";
+                string modeDesc = mode == GameMode.Zombies 
+                    ? "Fight waves of undead. Respawn next wave."
+                    : "Classic PvP deathmatch.";
+                
+                var elements = new CuiElementContainer();
+                
+                string panelName = "KillaDome_ModeConfirm";
+                
+                // Dark overlay
+                elements.Add(new CuiPanel
+                {
+                    Image = { Color = "0 0 0 0.85" },
+                    RectTransform = { AnchorMin = "0.3 0.35", AnchorMax = "0.7 0.65" },
+                    CursorEnabled = true
+                }, "Overlay", panelName);
+                
+                // Title
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = $"<color={modeColor}>JOIN {modeName}?</color>", FontSize = 24, Align = TextAnchor.MiddleCenter },
+                    RectTransform = { AnchorMin = "0 0.7", AnchorMax = "1 0.95" }
+                }, panelName);
+                
+                // Description
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = modeDesc, FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.8 0.8 0.8 1" },
+                    RectTransform = { AnchorMin = "0 0.45", AnchorMax = "1 0.65" }
+                }, panelName);
+                
+                // Warning
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = "<color=#FFD700>You cannot leave until the match ends!</color>", FontSize = 12, Align = TextAnchor.MiddleCenter },
+                    RectTransform = { AnchorMin = "0 0.3", AnchorMax = "1 0.45" }
+                }, panelName);
+                
+                // Confirm button
+                elements.Add(new CuiButton
+                {
+                    Button = { Color = "0.2 0.6 0.2 1", Command = $"kd.confirmmode {(int)mode}" },
+                    RectTransform = { AnchorMin = "0.1 0.08", AnchorMax = "0.45 0.25" },
+                    Text = { Text = "JOIN", FontSize = 18, Align = TextAnchor.MiddleCenter }
+                }, panelName);
+                
+                // Cancel button
+                elements.Add(new CuiButton
+                {
+                    Button = { Color = "0.6 0.2 0.2 1", Command = "kd.cancelmode" },
+                    RectTransform = { AnchorMin = "0.55 0.08", AnchorMax = "0.9 0.25" },
+                    Text = { Text = "CANCEL", FontSize = 18, Align = TextAnchor.MiddleCenter }
+                }, panelName);
+                
+                CuiHelper.DestroyUi(player, panelName);
+                CuiHelper.AddUi(player, elements);
+            }
+            
+            /// <summary>
+            /// Close the confirmation UI
+            /// </summary>
+            public void CloseConfirmationUI(BasePlayer player)
+            {
+                CuiHelper.DestroyUi(player, "KillaDome_ModeConfirm");
+                _pendingConfirmation.Remove(player.userID);
+            }
+            
+            /// <summary>
+            /// Player confirmed their mode selection
+            /// </summary>
+            public void ConfirmModeSelection(BasePlayer player, GameMode mode)
+            {
+                CloseConfirmationUI(player);
+                
+                var session = _plugin.GetSession(player.userID);
+                if (session == null) return;
+                
+                session.SelectedGameMode = mode;
+                session.CanLeaveMatch = false;
+                
+                if (mode == GameMode.Zombies)
+                {
+                    _zombiesQueue.Add(player.userID);
+                    
+                    // If match already active, spectate until next wave
+                    if (_zombiesMatchActive)
+                    {
+                        // Teleport to spectate position
+                        _plugin.TeleportPlayer(player, _config.SpectatePosition);
+                        session.IsSpectating = true;
+                        _spectatingPlayers.Add(player.userID);
+                        _plugin.SendReply(player, "<color=#FF4444>Zombies match in progress! Spectating until next wave...</color>");
+                    }
+                    else
+                    {
+                        // Start match if enough players or first player
+                        StartZombiesMatch();
+                    }
+                }
+                else if (mode == GameMode.Normal)
+                {
+                    _normalQueue.Add(player.userID);
+                    
+                    if (_normalMatchActive)
+                    {
+                        // Join ongoing match
+                        JoinNormalMatch(player);
+                    }
+                    else
+                    {
+                        StartNormalMatch();
+                    }
+                }
+                
+                _plugin.Puts($"{player.displayName} joined {mode} mode");
+            }
+            
+            /// <summary>
+            /// Start zombies match
+            /// </summary>
+            private void StartZombiesMatch()
+            {
+                _zombiesMatchActive = true;
+                
+                foreach (ulong steamId in _zombiesQueue)
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player == null || !player.IsConnected) continue;
+                    
+                    var session = _plugin.GetSession(steamId);
+                    if (session == null) continue;
+                    
+                    session.IsInMatch = true;
+                    session.IsSpectating = false;
+                    _spectatingPlayers.Remove(steamId);
+                    
+                    // Teleport to zombies arena and give loadout
+                    _plugin.TeleportPlayer(player, _config.ZombiesArenaPosition);
+                    _plugin.GiveLoadout(player);
+                }
+                
+                // Start zombie wave mode
+                if (_plugin._zombieIntegration.IsNecroZombiesLoaded())
+                {
+                    _plugin._zombieIntegration.StartWaveMode(_config.ZombiesArenaPosition, _config.ZombiesProfileName, _config.ZombiesSpawnSetName);
+                }
+                
+                _plugin.Puts("Zombies match started!");
+            }
+            
+            /// <summary>
+            /// Start normal match
+            /// </summary>
+            private void StartNormalMatch()
+            {
+                _normalMatchActive = true;
+                
+                foreach (ulong steamId in _normalQueue)
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player == null || !player.IsConnected) continue;
+                    
+                    JoinNormalMatch(player);
+                }
+                
+                _plugin.Puts("Normal match started!");
+            }
+            
+            /// <summary>
+            /// Join an ongoing normal match
+            /// </summary>
+            private void JoinNormalMatch(BasePlayer player)
+            {
+                var session = _plugin.GetSession(player.userID);
+                if (session == null) return;
+                
+                session.IsInMatch = true;
+                _plugin.TeleportPlayer(player, _config.NormalArenaPosition);
+                _plugin.GiveLoadout(player);
+            }
+            
+            /// <summary>
+            /// Called when a zombies wave ends - respawn spectators
+            /// </summary>
+            public void OnZombiesWaveEnd()
+            {
+                foreach (ulong steamId in _spectatingPlayers.ToList())
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player == null || !player.IsConnected) continue;
+                    
+                    var session = _plugin.GetSession(steamId);
+                    if (session == null) continue;
+                    
+                    session.IsSpectating = false;
+                    _spectatingPlayers.Remove(steamId);
+                    
+                    // Spawn with loadout
+                    _plugin.TeleportPlayer(player, _config.ZombiesArenaPosition);
+                    _plugin.GiveLoadout(player);
+                    _plugin.SendReply(player, "<color=#44FF44>Wave starting! You have been spawned!</color>");
+                }
+            }
+            
+            /// <summary>
+            /// Handle player death in zombies mode
+            /// </summary>
+            public void OnZombiesPlayerDeath(BasePlayer player)
+            {
+                var session = _plugin.GetSession(player.userID);
+                if (session == null) return;
+                
+                // Move to spectate until next wave
+                session.IsSpectating = true;
+                _spectatingPlayers.Add(player.userID);
+                
+                _plugin.timer.Once(2f, () =>
+                {
+                    if (player != null && player.IsConnected)
+                    {
+                        _plugin.TeleportPlayer(player, _config.SpectatePosition);
+                        _plugin.SendReply(player, "<color=#FF8800>You died! Spectating until next wave...</color>");
+                    }
+                });
+            }
+            
+            /// <summary>
+            /// End zombies match
+            /// </summary>
+            public void EndZombiesMatch()
+            {
+                _zombiesMatchActive = false;
+                
+                // Stop zombie waves
+                _plugin._zombieIntegration.StopWaveMode();
+                _plugin._zombieIntegration.KillAllZombies();
+                
+                // Return all players to lobby
+                foreach (ulong steamId in _zombiesQueue.ToList())
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player == null || !player.IsConnected) continue;
+                    
+                    var session = _plugin.GetSession(steamId);
+                    if (session == null) continue;
+                    
+                    session.IsInMatch = false;
+                    session.IsSpectating = false;
+                    session.SelectedGameMode = GameMode.None;
+                    session.CanLeaveMatch = true;
+                    
+                    _plugin.TeleportToLobby(player);
+                }
+                
+                _zombiesQueue.Clear();
+                _spectatingPlayers.Clear();
+                
+                _plugin.Puts("Zombies match ended!");
+            }
+            
+            /// <summary>
+            /// End normal match
+            /// </summary>
+            public void EndNormalMatch()
+            {
+                _normalMatchActive = false;
+                
+                // Return all players to lobby
+                foreach (ulong steamId in _normalQueue.ToList())
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player == null || !player.IsConnected) continue;
+                    
+                    var session = _plugin.GetSession(steamId);
+                    if (session == null) continue;
+                    
+                    session.IsInMatch = false;
+                    session.SelectedGameMode = GameMode.None;
+                    session.CanLeaveMatch = true;
+                    
+                    _plugin.TeleportToLobby(player);
+                }
+                
+                _normalQueue.Clear();
+                
+                _plugin.Puts("Normal match ended!");
+            }
+            
+            /// <summary>
+            /// Check if zombies match is active
+            /// </summary>
+            public bool IsZombiesMatchActive() => _zombiesMatchActive;
+            
+            /// <summary>
+            /// Check if normal match is active
+            /// </summary>
+            public bool IsNormalMatchActive() => _normalMatchActive;
+            
+            /// <summary>
+            /// Get pending confirmation for a player
+            /// </summary>
+            public GameMode GetPendingConfirmation(ulong steamId)
+            {
+                return _pendingConfirmation.ContainsKey(steamId) ? _pendingConfirmation[steamId] : GameMode.None;
             }
         }
         
