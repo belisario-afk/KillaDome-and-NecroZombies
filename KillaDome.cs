@@ -8,8 +8,9 @@
  * - Custom VFX/SFX for bullets and attachments
  * - Store integration (Tebex-compatible)
  * - High performance, GC-friendly architecture
+ * - NecroZombies integration for Black Ops zombies experience
  * 
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: KillaDome Dev Team
  */
 
@@ -877,59 +878,61 @@ namespace Oxide.Plugins
             LogDebug($"Player {player.displayName} disconnected: {reason}");
         }
         
-        private void OnEntityDeath(BasePlayer victim, HitInfo info)
-        {
-            if (victim == null || _tokenEconomy == null || _telemetry == null) return;
-            
-            var attacker = info?.InitiatorPlayer;
-            if (attacker != null && attacker != victim && attacker.IsConnected)
-            {
-                // Award tokens for kill
-                _tokenEconomy.AwardTokens(attacker.userID, _config.TokensPerKill);
-                
-                // Track telemetry
-                _telemetry.RecordKill(attacker.userID, victim.userID);
-                
-                LogDebug($"{attacker.displayName} killed {victim.displayName}");
-            }
-            
-            // Respawn victim in lobby after delay
-            timer.Once(3f, () =>
-            {
-                if (victim != null && victim.IsConnected)
-                {
-                    TeleportToLobby(victim);
-                    victim.Respawn();
-                }
-            });
-        }
-        
         private void OnEntityDeath(BaseCombatEntity entity, HitInfo info)
         {
-            // Award tokens for zombie/NPC kills
-            if (entity == null || info == null || _tokenEconomy == null) return;
+            if (entity == null || _tokenEconomy == null) return;
             
-            // Skip if it's a player (handled by other hook)
-            if (entity is BasePlayer) return;
+            // Handle player deaths
+            var victim = entity as BasePlayer;
+            if (victim != null)
+            {
+                if (_telemetry == null) return;
+                
+                var attacker = info?.InitiatorPlayer;
+                if (attacker != null && attacker != victim && attacker.IsConnected)
+                {
+                    // Award tokens for kill
+                    _tokenEconomy.AwardTokens(attacker.userID, _config.TokensPerKill);
+                    
+                    // Track telemetry
+                    _telemetry.RecordKill(attacker.userID, victim.userID);
+                    
+                    LogDebug($"{attacker.displayName} killed {victim.displayName}");
+                }
+                
+                // Respawn victim in lobby after delay
+                timer.Once(3f, () =>
+                {
+                    if (victim != null && victim.IsConnected)
+                    {
+                        TeleportToLobby(victim);
+                        victim.Respawn();
+                    }
+                });
+                return;
+            }
+            
+            // Handle zombie/NPC deaths (for Black Ops zombies mode)
+            if (info == null) return;
             
             // Check if this is a zombie kill (NPCPlayer or scarecrow types)
             var npc = entity as NPCPlayer;
             if (npc == null) return;
             
-            var attacker = info.InitiatorPlayer;
-            if (attacker != null && attacker.IsConnected && _config.EnableZombiesMode)
+            var zombieAttacker = info.InitiatorPlayer;
+            if (zombieAttacker != null && zombieAttacker.IsConnected && _config.EnableZombiesMode)
             {
                 // Award tokens for zombie kill
-                _tokenEconomy.AwardTokens(attacker.userID, _config.TokensPerZombieKill);
+                _tokenEconomy.AwardTokens(zombieAttacker.userID, _config.TokensPerZombieKill);
                 
                 // Track telemetry
-                var session = GetSession(attacker.userID);
+                var session = GetSession(zombieAttacker.userID);
                 if (session != null)
                 {
                     session.Profile.TotalKills++;
                 }
                 
-                LogDebug($"{attacker.displayName} killed a zombie (+{_config.TokensPerZombieKill} tokens)");
+                LogDebug($"{zombieAttacker.displayName} killed a zombie (+{_config.TokensPerZombieKill} tokens)");
             }
         }
         
