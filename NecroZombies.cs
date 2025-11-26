@@ -9,7 +9,7 @@ using Newtonsoft.Json;
 // hop-like movement, fire/flies/gore VFX, and CUI wave/stage banners.
 namespace Oxide.Plugins
 {
-    [Info("NecroZombies", "belisario-afk", "2.4.0")]
+    [Info("NecroZombies", "belisario-afk", "2.5.0")]
     [Description("Spawns fast, aggressive scarecrow-based zombies and hellhounds with spawn sets, drip waves, CUI, and horror VFX")]
     public class NecroZombies : RustPlugin
     {
@@ -245,8 +245,9 @@ namespace Oxide.Plugins
         // Fire & gore VFX
         private const string BurnEffectPrefab = "assets/bundled/prefabs/fx/fire/fire_v3.prefab";
         private const string BloodSlashEffect = "assets/bundled/prefabs/fx/impacts/slash/blood14slash.prefab";
-        private const string FliesMediumEffect = "assets/bundled/prefabs/fx/animals/flies/flies_medium.prefab";
-        private const string FliesLoopEffect = "assets/bundled/prefabs/fx/animals/flies/flies_looping.prefab";
+        // Disabled flies effects - they cause server lag when running continuously
+        // private const string FliesMediumEffect = "assets/bundled/prefabs/fx/animals/flies/flies_medium.prefab";
+        // private const string FliesLoopEffect = "assets/bundled/prefabs/fx/animals/flies/flies_looping.prefab";
         private const string EatCeleryEffect = "assets/bundled/prefabs/fx/gestures/eat_celery.prefab";
         private const string DrinkVomitEffect = "assets/bundled/prefabs/fx/gestures/drink_vomit.prefab";
 
@@ -646,11 +647,6 @@ namespace Oxide.Plugins
                 entity.SendNetworkUpdate();
             }
 
-            if (!string.IsNullOrEmpty(FliesMediumEffect))
-            {
-                Effect.server.Run(FliesMediumEffect, entity.transform.position + Vector3.up * 1.2f, Vector3.up, null);
-            }
-
             var npc = entity as NPCPlayer;
             if (npc != null)
             {
@@ -735,12 +731,6 @@ namespace Oxide.Plugins
             if (!string.IsNullOrEmpty(BurnEffectPrefab))
             {
                 Effect.server.Run(BurnEffectPrefab, entity.transform.position + Vector3.up * 0.1f, Vector3.up, null);
-            }
-
-            // Optional: small flies at body height
-            if (!string.IsNullOrEmpty(FliesMediumEffect))
-            {
-                Effect.server.Run(FliesMediumEffect, entity.transform.position + Vector3.up * 0.5f, Vector3.up, null);
             }
 
             return true;
@@ -870,16 +860,6 @@ namespace Oxide.Plugins
                     continue;
 
                 Vector3 npcPos = npc.transform.position;
-
-                if (!string.IsNullOrEmpty(BurnEffectPrefab))
-                {
-                    Effect.server.Run(BurnEffectPrefab, npcPos + Vector3.up * 0.1f, Vector3.up, null);
-                }
-
-                if (!string.IsNullOrEmpty(FliesLoopEffect))
-                {
-                    Effect.server.Run(FliesLoopEffect, npcPos + Vector3.up * 1.2f, Vector3.up, null);
-                }
 
                 BasePlayer target = null;
                 float bestDist = float.MaxValue;
@@ -1441,187 +1421,108 @@ namespace Oxide.Plugins
         
         private string BuildWaveHudJson(string text)
         {
-            var container = new CuiElementContainer();
-            
-            // Small panel in top-right corner
-            var panel = new CuiElement
-            {
-                Name = WaveHudPanel,
-                Parent = "Hud",
-                Components =
-                {
-                    new CuiImageComponent
-                    {
-                        Color = "0 0 0 0.7"
-                    },
-                    new CuiRectTransformComponent
-                    {
-                        AnchorMin = "0.85 0.92",
-                        AnchorMax = "0.99 0.99"
-                    }
-                }
-            };
-            container.elements.Add(panel);
-            
-            // Text
-            var textElement = new CuiElement
-            {
-                Name = WaveHudText,
-                Parent = WaveHudPanel,
-                Components =
-                {
-                    new CuiTextComponent
-                    {
-                        Text = text,
-                        FontSize = 14,
-                        Align = (int)TextAnchor.MiddleCenter,
-                        Color = "1 1 1 1"
-                    },
-                    new CuiRectTransformComponent
-                    {
-                        AnchorMin = "0.05 0.05",
-                        AnchorMax = "0.95 0.95"
-                    }
-                }
-            };
-            container.elements.Add(textElement);
-            
-            return JsonConvert.SerializeObject(container);
+            // Raw JSON format for Oxide CUI - more reliable than serializing objects
+            return $@"[
+                {{
+                    ""name"": ""{WaveHudPanel}"",
+                    ""parent"": ""Overlay"",
+                    ""components"": [
+                        {{
+                            ""type"": ""UnityEngine.UI.Image"",
+                            ""color"": ""0 0 0 0.8""
+                        }},
+                        {{
+                            ""type"": ""RectTransform"",
+                            ""anchormin"": ""0.85 0.92"",
+                            ""anchormax"": ""0.99 0.99""
+                        }}
+                    ]
+                }},
+                {{
+                    ""name"": ""{WaveHudText}"",
+                    ""parent"": ""{WaveHudPanel}"",
+                    ""components"": [
+                        {{
+                            ""type"": ""UnityEngine.UI.Text"",
+                            ""text"": ""{text.Replace("\"", "\\\"")}"",
+                            ""fontSize"": 14,
+                            ""align"": ""MiddleCenter"",
+                            ""color"": ""1 1 1 1""
+                        }},
+                        {{
+                            ""type"": ""RectTransform"",
+                            ""anchormin"": ""0.05 0.05"",
+                            ""anchormax"": ""0.95 0.95""
+                        }}
+                    ]
+                }}
+            ]";
         }
 
         private string BuildWaveBannerJson(string title, string subtitle)
         {
             var waves = _config.Waves;
-
-            var container = new CuiElementContainer();
-
-            // Root panel
-            var panel = new CuiElement
-            {
-                Name = WaveBannerPanel,
-                Parent = "Hud",
-                Components =
-                {
-                    new CuiImageComponent
-                    {
-                        Color = "0 0 0 0.55"
-                    },
-                    new CuiRectTransformComponent
-                    {
-                        AnchorMin = "0.2 0.9",
-                        AnchorMax = "0.8 0.98"
-                    }
-                }
-            };
-            container.elements.Add(panel);
-
-            // Title
-            var titleElement = new CuiElement
-            {
-                Name = WaveBannerTitle,
-                Parent = WaveBannerPanel,
-                Components =
-                {
-                    new CuiTextComponent
-                    {
-                        Text = title,
-                        FontSize = waves.BannerTitleSize,
-                        Align = (int)TextAnchor.MiddleCenter,
-                        Color = waves.BannerTitleColor
-                    },
-                    new CuiRectTransformComponent
-                    {
-                        AnchorMin = "0 0.3",
-                        AnchorMax = "1 1"
-                    }
-                }
-            };
-            container.elements.Add(titleElement);
-
+            
+            string subtitleJson = "";
             if (!string.IsNullOrEmpty(subtitle))
             {
-                var subElement = new CuiElement
-                {
-                    Name = WaveBannerSubtitle,
-                    Parent = WaveBannerPanel,
-                    Components =
-                    {
-                        new CuiTextComponent
-                        {
-                            Text = subtitle,
-                            FontSize = waves.BannerSubSize,
-                            Align = (int)TextAnchor.MiddleCenter,
-                            Color = waves.BannerSubColor
-                        },
-                        new CuiRectTransformComponent
-                        {
-                            AnchorMin = "0 0",
-                            AnchorMax = "1 0.5"
-                        }
-                    }
-                };
-                container.elements.Add(subElement);
+                subtitleJson = $@",
+                {{
+                    ""name"": ""{WaveBannerSubtitle}"",
+                    ""parent"": ""{WaveBannerPanel}"",
+                    ""components"": [
+                        {{
+                            ""type"": ""UnityEngine.UI.Text"",
+                            ""text"": ""{subtitle.Replace("\"", "\\\"")}"",
+                            ""fontSize"": {waves.BannerSubSize},
+                            ""align"": ""MiddleCenter"",
+                            ""color"": ""{waves.BannerSubColor}""
+                        }},
+                        {{
+                            ""type"": ""RectTransform"",
+                            ""anchormin"": ""0 0"",
+                            ""anchormax"": ""1 0.5""
+                        }}
+                    ]
+                }}";
             }
-
-            return JsonConvert.SerializeObject(container);
-        }
-
-        // Minimal CUI support types
-        private class CuiElementContainer
-        {
-            [JsonProperty("elements")]
-            public List<CuiElement> elements = new List<CuiElement>();
-        }
-
-        private class CuiElement
-        {
-            [JsonProperty("name", NullValueHandling = NullValueHandling.Ignore)]
-            public string Name;
-
-            [JsonProperty("parent", NullValueHandling = NullValueHandling.Ignore)]
-            public string Parent;
-
-            [JsonProperty("components")]
-            public List<object> Components = new List<object>();
-        }
-
-        private class CuiRectTransformComponent
-        {
-            [JsonProperty("type")]
-            public string Type = "RectTransform";
-
-            [JsonProperty("anchormin")]
-            public string AnchorMin;
-
-            [JsonProperty("anchormax")]
-            public string AnchorMax;
-        }
-
-        private class CuiImageComponent
-        {
-            [JsonProperty("type")]
-            public string Type = "UnityEngine.UI.Image";
-
-            [JsonProperty("color")]
-            public string Color = "1 1 1 1";
-        }
-
-        private class CuiTextComponent
-        {
-            [JsonProperty("type")]
-            public string Type = "UnityEngine.UI.Text";
-
-            [JsonProperty("text")]
-            public string Text;
-
-            [JsonProperty("fontSize")]
-            public int FontSize;
-
-            [JsonProperty("align")]
-            public int Align;
-
-            [JsonProperty("color")]
-            public string Color = "1 1 1 1";
+            
+            // Raw JSON format for Oxide CUI
+            return $@"[
+                {{
+                    ""name"": ""{WaveBannerPanel}"",
+                    ""parent"": ""Overlay"",
+                    ""components"": [
+                        {{
+                            ""type"": ""UnityEngine.UI.Image"",
+                            ""color"": ""0 0 0 0.7""
+                        }},
+                        {{
+                            ""type"": ""RectTransform"",
+                            ""anchormin"": ""0.25 0.85"",
+                            ""anchormax"": ""0.75 0.95""
+                        }}
+                    ]
+                }},
+                {{
+                    ""name"": ""{WaveBannerTitle}"",
+                    ""parent"": ""{WaveBannerPanel}"",
+                    ""components"": [
+                        {{
+                            ""type"": ""UnityEngine.UI.Text"",
+                            ""text"": ""{title.Replace("\"", "\\\"")}"",
+                            ""fontSize"": {waves.BannerTitleSize},
+                            ""align"": ""MiddleCenter"",
+                            ""color"": ""{waves.BannerTitleColor}""
+                        }},
+                        {{
+                            ""type"": ""RectTransform"",
+                            ""anchormin"": ""0 0.4"",
+                            ""anchormax"": ""1 1""
+                        }}
+                    ]
+                }}{subtitleJson}
+            ]";
         }
 
         #endregion
