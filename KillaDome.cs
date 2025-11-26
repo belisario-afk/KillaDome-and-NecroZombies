@@ -10,7 +10,7 @@
  * - High performance, GC-friendly architecture
  * - NecroZombies integration for Black Ops zombies experience
  * 
- * Version: 1.1.0
+ * Version: 1.3.0
  * Author: KillaDome Dev Team
  */
 

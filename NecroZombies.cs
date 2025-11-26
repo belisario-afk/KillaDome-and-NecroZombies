@@ -282,6 +282,7 @@ namespace Oxide.Plugins
         
         // Explosive prefab for Brute
         private const string BeancanPrefab = "assets/prefabs/weapons/beancan grenade/grenade.beancan.deployed.prefab";
+        private const string ExplosionEffect = "assets/prefabs/weapons/beancan grenade/effects/beancan_grenade_explosion.prefab";
 
         private const float RaycastMaxDistance = 200f;
 
@@ -1082,9 +1083,22 @@ namespace Oxide.Plugins
                         wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
                         
                         // Force wolf to chase player by setting destination
-                        if (wolf.NavAgent != null && wolf.NavAgent.isOnNavMesh)
+                        if (wolf.NavAgent != null)
                         {
-                            wolf.NavAgent.SetDestination(nearestPlayer.transform.position);
+                            if (wolf.NavAgent.isOnNavMesh)
+                            {
+                                wolf.NavAgent.SetDestination(nearestPlayer.transform.position);
+                            }
+                            else
+                            {
+                                // Try to warp to navmesh if not on it (custom maps issue)
+                                UnityEngine.AI.NavMeshHit hit;
+                                if (UnityEngine.AI.NavMesh.SamplePosition(wolf.transform.position, out hit, 10f, -1))
+                                {
+                                    wolf.NavAgent.Warp(hit.position);
+                                    wolf.NavAgent.SetDestination(nearestPlayer.transform.position);
+                                }
+                            }
                         }
                     }
                 }
@@ -1144,6 +1158,9 @@ namespace Oxide.Plugins
                     
                 Vector3 explosionPos = entity.transform.position + Vector3.up * 1.5f;  // Head height
                 
+                // Remove from tracking first to prevent duplicate explosions
+                _explosiveBrutes.Remove(entity);
+                
                 // BOOM! Spawn beancan grenade at brute's head position
                 BaseEntity grenade = GameManager.server.CreateEntity(BeancanPrefab, explosionPos, Quaternion.identity, true);
                 if (grenade != null)
@@ -1154,12 +1171,29 @@ namespace Oxide.Plugins
                     var timedExplosive = grenade as TimedExplosive;
                     if (timedExplosive != null)
                     {
-                        timedExplosive.SetFuse(0.1f);  // Explode almost immediately
+                        timedExplosive.SetFuse(0.05f);  // Explode even faster
+                    }
+                    else
+                    {
+                        // Fallback: manually trigger explosion effect
+                        Effect.server.Run(ExplosionEffect, explosionPos);
+                        
+                        // Damage nearby players directly
+                        foreach (var player in BasePlayer.activePlayerList)
+                        {
+                            if (player == null || player.IsDead())
+                                continue;
+                            float dist = Vector3.Distance(player.transform.position, explosionPos);
+                            if (dist <= 5f)
+                            {
+                                float damage = (5f - dist) * 30f;  // Closer = more damage
+                                player.Hurt(damage, Rust.DamageType.Explosion, entity);
+                            }
+                        }
                     }
                 }
                 
-                // Kill the brute and remove from tracking
-                _explosiveBrutes.Remove(entity);
+                // Kill the brute
                 entity.Kill();
             }
         }
