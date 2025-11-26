@@ -774,7 +774,7 @@ namespace Oxide.Plugins
             // Start teleporter zone check timer
             _teleporterCheckTimer = timer.Every(0.5f, () => CheckTeleporterZones());
             
-            // Spawn teleporter hex tiles after a short delay
+            // Spawn teleporter spheres after a short delay
             timer.Once(3f, () => _gameModeSystem.SpawnTeleporterTiles());
             
             // Check NecroZombies integration
@@ -859,7 +859,7 @@ namespace Oxide.Plugins
         
         private void Unload()
         {
-            // Clean up teleporter hex tiles
+            // Clean up teleporter spheres
             _gameModeSystem?.CleanupTeleporterTiles();
             
             // Clean up all UI
@@ -1706,7 +1706,7 @@ namespace Oxide.Plugins
                     }
                     
                     _gameModeSystem.RefreshTeleporterTiles();
-                    SendReply(player, "<color=#00FF00>Teleporter hex tiles refreshed!</color>");
+                    SendReply(player, "<color=#00FF00>Teleporter spheres refreshed!</color>");
                     break;
                     
                 case "help":
@@ -1718,7 +1718,7 @@ namespace Oxide.Plugins
                             "/kd setteleporter <zombies|normal> - Set teleporter position\n" +
                             "/kd setspectate - Set spectate/skybox position\n" +
                             "/kd setarena <zombies|normal> - Set arena spawn position\n" +
-                            "/kd spawntiles - Refresh hex tile teleporters\n" +
+                            "/kd spawntiles - Refresh teleporter spheres\n" +
                             "/kd zombies - Control zombie wave mode\n" +
                             "/kd endzombies - End zombies match\n" +
                             "/kd endnormal - End normal match" : ""));
@@ -5599,12 +5599,12 @@ namespace Oxide.Plugins
             private bool _zombiesMatchActive = false;
             private bool _normalMatchActive = false;
             
-            // Teleporter hex tiles
+            // Teleporter sphere entities
             private List<BaseEntity> _teleporterTiles = new List<BaseEntity>();
             
-            // Hex tile prefabs
-            private const string HEX_TILE_RED = "assets/prefabs/misc/twitch/hex-a-gone/hexagontile_red.entity.prefab";
-            private const string HEX_TILE_BLUE = "assets/prefabs/misc/twitch/hex-a-gone/hexagontile_blue.entity.prefab";
+            // Teleporter sphere prefabs (more visible and persistent)
+            private const string SPHERE_RED = "assets/bundled/prefabs/modding/events/twitch/br_sphere_red.prefab";
+            private const string SPHERE_GREEN = "assets/bundled/prefabs/modding/events/twitch/br_sphere_green.prefab";
             
             internal GameModeSystem(KillaDome plugin, PluginConfig config)
             {
@@ -5613,7 +5613,7 @@ namespace Oxide.Plugins
             }
             
             /// <summary>
-            /// Spawn hex tiles at teleporter positions
+            /// Spawn sphere at teleporter positions
             /// </summary>
             public void SpawnTeleporterTiles()
             {
@@ -5622,46 +5622,26 @@ namespace Oxide.Plugins
                 // Cleanup old tiles first
                 CleanupTeleporterTiles();
                 
-                // Spawn zombies teleporter tile (red)
-                SpawnHexTileCluster(_config.ZombiesTeleporterPosition, HEX_TILE_RED, 7);
+                // Spawn zombies teleporter sphere (red)
+                SpawnTeleporterSphere(_config.ZombiesTeleporterPosition, SPHERE_RED);
                 
-                // Spawn normal teleporter tile (blue)
-                SpawnHexTileCluster(_config.NormalTeleporterPosition, HEX_TILE_BLUE, 7);
+                // Spawn normal teleporter sphere (green)
+                SpawnTeleporterSphere(_config.NormalTeleporterPosition, SPHERE_GREEN);
                 
-                _plugin.LogDebug($"Spawned teleporter hex tiles at Zombies: {_config.ZombiesTeleporterPosition} and Normal: {_config.NormalTeleporterPosition}");
+                _plugin.LogDebug($"Spawned teleporter spheres at Zombies: {_config.ZombiesTeleporterPosition} and Normal: {_config.NormalTeleporterPosition}");
             }
             
             /// <summary>
-            /// Spawn a cluster of hex tiles in a pattern
+            /// Spawn a teleporter sphere entity
             /// </summary>
-            private void SpawnHexTileCluster(Vector3 center, string prefab, int count)
-            {
-                // Center tile
-                SpawnHexTile(center, prefab);
-                
-                // Surrounding tiles in a hex pattern
-                float spacing = 1.0f;
-                float[] angles = { 0, 60, 120, 180, 240, 300 };
-                
-                for (int i = 0; i < Math.Min(count - 1, 6); i++)
-                {
-                    float angleRad = angles[i] * Mathf.Deg2Rad;
-                    Vector3 offset = new Vector3(Mathf.Cos(angleRad) * spacing, 0, Mathf.Sin(angleRad) * spacing);
-                    SpawnHexTile(center + offset, prefab);
-                }
-            }
-            
-            /// <summary>
-            /// Spawn a single hex tile entity
-            /// </summary>
-            private void SpawnHexTile(Vector3 position, string prefab)
+            private void SpawnTeleporterSphere(Vector3 position, string prefab)
             {
                 try
                 {
-                    var entity = GameManager.server.CreateEntity(prefab, position, Quaternion.identity);
+                    var entity = GameManager.server.CreateEntity(prefab, position + new Vector3(0, 1f, 0), Quaternion.identity);
                     if (entity == null)
                     {
-                        _plugin.PrintWarning($"Failed to create hex tile entity at {position}");
+                        _plugin.PrintWarning($"Failed to create teleporter sphere at {position}");
                         return;
                     }
                     
@@ -5674,18 +5654,11 @@ namespace Oxide.Plugins
                         baseCombat.SetHealth(float.MaxValue);
                     }
                     
-                    // Disable physics/decay
-                    var stabilityEntity = entity.GetComponent<StabilityEntity>();
-                    if (stabilityEntity != null)
-                    {
-                        stabilityEntity.grounded = true;
-                    }
-                    
                     _teleporterTiles.Add(entity);
                 }
                 catch (Exception ex)
                 {
-                    _plugin.PrintError($"Error spawning hex tile: {ex.Message}");
+                    _plugin.PrintError($"Error spawning teleporter sphere: {ex.Message}");
                 }
             }
             
