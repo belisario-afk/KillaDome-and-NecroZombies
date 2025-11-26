@@ -705,9 +705,6 @@ namespace Oxide.Plugins
                 wolf.SetFact(BaseNpc.Facts.IsAggro, 1);
                 wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
                 wolf.SetFact(BaseNpc.Facts.IsAfraid, 0);
-                wolf.SetFact(BaseNpc.Facts.AfraidRange, 0);
-                wolf.SetFact(BaseNpc.Facts.IsRetreatingToCover, 0);
-                wolf.SetFact(BaseNpc.Facts.IsFleeing, 0);
                 
                 // Find nearest player anywhere on map and set as target
                 var nearestPlayer = FindNearestPlayer(position, 500f);
@@ -963,9 +960,6 @@ namespace Oxide.Plugins
                     wolf.SetFact(BaseNpc.Facts.IsAggro, 1);
                     wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
                     wolf.SetFact(BaseNpc.Facts.IsAfraid, 0);
-                    wolf.SetFact(BaseNpc.Facts.AfraidRange, 0);
-                    wolf.SetFact(BaseNpc.Facts.IsRetreatingToCover, 0);
-                    wolf.SetFact(BaseNpc.Facts.IsFleeing, 0);
                     
                     // Find ANY player on the map
                     var nearestPlayer = FindNearestPlayer(wolf.transform.position, 500f);
