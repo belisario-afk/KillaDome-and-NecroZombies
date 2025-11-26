@@ -3041,20 +3041,30 @@ namespace Oxide.Plugins
                     RectTransform = { AnchorMin = "0 0", AnchorMax = "1 0.02" }
                 }, "PlayContent");
                 
-                // Join Queue button - large and centered
-                container.Add(new CuiButton
+                // Teleporter instruction panel (replaces queue button)
+                container.Add(new CuiPanel
                 {
-                    Button = { Color = "0.2 0.7 0.3 0.95", Command = "killadome.joinqueue" },
-                    RectTransform = { AnchorMin = "0.25 0.50", AnchorMax = "0.75 0.75" },
-                    Text = { Text = "⚔ JOIN QUEUE ⚔", FontSize = 28, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
-                }, "PlayContent");
+                    Image = { Color = "0.15 0.12 0.08 0.95" },
+                    RectTransform = { AnchorMin = "0.15 0.50", AnchorMax = "0.85 0.85" }
+                }, "PlayContent", "TeleporterInfo");
                 
-                // Status indicator
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = "Click to enter the battlefield", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
-                    RectTransform = { AnchorMin = "0.1 0.38", AnchorMax = "0.9 0.48" }
-                }, "PlayContent");
+                    Text = { Text = "⚔ USE LOBBY TELEPORTERS ⚔", FontSize = 22, Align = TextAnchor.MiddleCenter, Color = "1 0.9 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.70", AnchorMax = "1 0.95" }
+                }, "TeleporterInfo");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "<color=#FF4444>RED TILES</color> = Zombies Mode\n<color=#4488FF>BLUE TILES</color> = Normal PvP", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0 0.25", AnchorMax = "1 0.65" }
+                }, "TeleporterInfo");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "Walk into a teleporter to join!", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0 0.05", AnchorMax = "1 0.25" }
+                }, "TeleporterInfo");
                 
                 // Stats preview
                 var session = _plugin.GetSession(player.userID);

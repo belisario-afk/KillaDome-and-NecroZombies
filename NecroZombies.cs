@@ -1318,8 +1318,9 @@ namespace Oxide.Plugins
             _currentWaveTotalToSpawn = Mathf.Max(1, baseCount + (_currentWave - 1) * countIncrease);
             _currentWaveInitialCount = _currentWaveTotalToSpawn;
 
-            float interval = waves.SpawnIntervalSeconds * Mathf.Pow(waves.SpawnIntervalPerWaveMultiplier, _currentWave - 1);
-            _currentWaveSpawnInterval = Mathf.Max(waves.SpawnIntervalMinSeconds, interval);
+            // Get dynamic spawn interval based on wave
+            var (_, dynamicInterval) = GetWaveSpawnSettings();
+            _currentWaveSpawnInterval = dynamicInterval;
 
             _currentWaveStartTime = Time.realtimeSinceStartup;
 
@@ -1329,7 +1330,7 @@ namespace Oxide.Plugins
             else
                 ShowWaveBanner(_currentWave, _waveProfileName);
 
-            Puts($"[NecroZombies] Wave {_currentWave} starting. Hellhounds: {hellWave}. Will spawn ~{_currentWaveTotalToSpawn} total.");
+            Puts($"[NecroZombies] Wave {_currentWave} starting. Hellhounds: {hellWave}. Will spawn ~{_currentWaveTotalToSpawn} total. Interval: {_currentWaveSpawnInterval}s");
 
             _waveSpawnTimer?.Destroy();
             _waveSpawnTimer = timer.Every(_currentWaveSpawnInterval, DripSpawnWave);
@@ -1338,6 +1339,9 @@ namespace Oxide.Plugins
             _waveCheckTimer = timer.Every(1f, CheckWaveProgress);
         }
 
+        // Track which spawn point to use next (round-robin)
+        private int _spawnPointIndex = 0;
+        
         private Vector3 GetRandomSpawnPosition()
         {
             if (_waveSpawnSetName != null &&
@@ -1346,13 +1350,73 @@ namespace Oxide.Plugins
                 list != null &&
                 list.Count > 0)
             {
-                var point = list[UnityEngine.Random.Range(0, list.Count)];
+                // Round-robin through spawn points instead of random
+                // This ensures all spawn points are used evenly
+                _spawnPointIndex = (_spawnPointIndex + 1) % list.Count;
+                var point = list[_spawnPointIndex];
+                
+                // Small random offset around the spawn point
                 Vector2 circle = UnityEngine.Random.insideUnitCircle * UnityEngine.Random.Range(0.5f, 2f);
                 return point + new Vector3(circle.x, 0f, circle.y);
             }
 
             Vector2 fallbackCircle = UnityEngine.Random.insideUnitCircle * UnityEngine.Random.Range(3f, 6f);
             return _fallbackCenter + new Vector3(fallbackCircle.x, 0f, fallbackCircle.y);
+        }
+        
+        /// <summary>
+        /// Calculate dynamic spawn settings based on current wave
+        /// Early waves: spawn 1-2 at a time, slow interval
+        /// Later waves: spawn 2-4 at a time, faster interval
+        /// </summary>
+        private (int groupSize, float interval) GetWaveSpawnSettings()
+        {
+            int wave = _currentWave;
+            
+            // Group size: waves 1-3 = 1-2, waves 4-6 = 2, waves 7+ = 2-4
+            int groupSize;
+            if (wave <= 3)
+                groupSize = UnityEngine.Random.Range(1, 3); // 1-2
+            else if (wave <= 6)
+                groupSize = 2;
+            else if (wave <= 10)
+                groupSize = UnityEngine.Random.Range(2, 4); // 2-3
+            else
+                groupSize = UnityEngine.Random.Range(2, 5); // 2-4
+            
+            // Spawn interval: starts at 5s, decreases each wave, minimum 1.5s
+            float baseInterval = 5.0f;
+            float intervalReduction = 0.3f * (wave - 1);
+            float interval = Mathf.Max(1.5f, baseInterval - intervalReduction);
+            
+            return (groupSize, interval);
+        }
+        
+        /// <summary>
+        /// Get zombie variant for current wave (brutes only after wave 4)
+        /// </summary>
+        private string GetZombieVariantForWave()
+        {
+            float roll = UnityEngine.Random.Range(0f, 1f);
+            
+            if (_currentWave < 4)
+            {
+                // Waves 1-3: Only default (70%) and runner (30%), NO brutes
+                if (roll < 0.70f)
+                    return "default";
+                else
+                    return "runner";
+            }
+            else
+            {
+                // Wave 4+: default (60%), runner (25%), brute (15%)
+                if (roll < 0.60f)
+                    return "default";
+                else if (roll < 0.85f)
+                    return "runner";
+                else
+                    return "brute";
+            }
         }
 
         private void DripSpawnWave()
@@ -1377,8 +1441,9 @@ namespace Oxide.Plugins
                 return;
 
             bool hellWave = IsHellhoundWave(_currentWave);
-
-            int groupSize = waves.GroupSize;
+            
+            // Get dynamic spawn settings based on current wave
+            var (groupSize, spawnInterval) = GetWaveSpawnSettings();
             int spawnedThisTick = 0;
 
             for (int i = 0; i < groupSize; i++)
@@ -1418,15 +1483,8 @@ namespace Oxide.Plugins
                     }
                     else
                     {
-                        // Mix zombie variants during hellhound wave too: default (60%), runner (25%), brute (15%)
-                        float variantRoll = UnityEngine.Random.Range(0f, 1f);
-                        string variantName;
-                        if (variantRoll < 0.60f)
-                            variantName = "default";
-                        else if (variantRoll < 0.85f)
-                            variantName = "runner";
-                        else
-                            variantName = "brute";
+                        // Use wave-appropriate variant (no brutes before wave 4)
+                        string variantName = GetZombieVariantForWave();
                         
                         var baseProfile = GetProfile(variantName);
                         float healthMultiplier = 1f + _config.Waves.HealthMultiplierPerWave * (_currentWave - 1);
@@ -1458,15 +1516,8 @@ namespace Oxide.Plugins
                 }
                 else
                 {
-                    // Mix of zombie variants: default (60%), runner (25%), brute (15%)
-                    float roll = UnityEngine.Random.Range(0f, 1f);
-                    string variantName;
-                    if (roll < 0.60f)
-                        variantName = "default";
-                    else if (roll < 0.85f)
-                        variantName = "runner";
-                    else
-                        variantName = "brute";
+                    // Use wave-appropriate variant (no brutes before wave 4)
+                    string variantName = GetZombieVariantForWave();
                     
                     var baseProfile = GetProfile(variantName);
                     float healthMultiplier = 1f + _config.Waves.HealthMultiplierPerWave * (_currentWave - 1);
