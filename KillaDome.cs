@@ -26,8 +26,8 @@ using System.IO;
 
 namespace Oxide.Plugins
 {
-    [Info("KillaDome", "KillaDome", "1.0.0")]
-    [Description("Full COD-style server experience with lobby, loadouts, and progression")]
+    [Info("KillaDome", "KillaDome", "1.1.0")]
+    [Description("Full COD-style server experience with lobby, loadouts, progression, and Black Ops zombies integration via NecroZombies")]
     public class KillaDome : RustPlugin
     {
         #region Fields
@@ -35,7 +35,11 @@ namespace Oxide.Plugins
         [PluginReference]
         private Plugin ImageLibrary;
         
+        [PluginReference]
+        private Plugin NecroZombies;
+        
         private DomeManager _domeManager;
+        private ZombieIntegration _zombieIntegration;
         private LobbyUI _lobbyUI;
         private LoadoutEditor _loadoutEditor;
         private AttachmentSystem _attachmentSystem;
@@ -565,6 +569,22 @@ namespace Oxide.Plugins
             
             [JsonProperty("Enable Debug Logging")]
             public bool EnableDebugLogging { get; set; } = false;
+            
+            // ===== ZOMBIES MODE SETTINGS (NecroZombies Integration) =====
+            [JsonProperty("Enable Zombies Mode")]
+            public bool EnableZombiesMode { get; set; } = true;
+            
+            [JsonProperty("Zombies Auto Start On Match")]
+            public bool ZombiesAutoStartOnMatch { get; set; } = true;
+            
+            [JsonProperty("Zombies Profile Name")]
+            public string ZombiesProfileName { get; set; } = "default";
+            
+            [JsonProperty("Zombies Spawn Set Name")]
+            public string ZombiesSpawnSetName { get; set; } = "";
+            
+            [JsonProperty("Tokens Per Zombie Kill")]
+            public int TokensPerZombieKill { get; set; } = 5;
         }
         
         protected override void LoadDefaultConfig()
@@ -704,6 +724,7 @@ namespace Oxide.Plugins
             _lobbyUI = new LobbyUI(this, _loadoutEditor, _forgeStation, _tokenEconomy);
             _domeManager = new DomeManager(this, _config);
             _telemetry = new TelemetrySystem(this);
+            _zombieIntegration = new ZombieIntegration(this, _config);
             
             LogDebug("KillaDome initialized successfully");
         }
@@ -715,6 +736,19 @@ namespace Oxide.Plugins
             
             // Load images after server is ready
             timer.Once(5f, () => LoadImages());
+            
+            // Check NecroZombies integration
+            if (_config.EnableZombiesMode)
+            {
+                if (NecroZombies == null || !NecroZombies.IsLoaded)
+                {
+                    PrintWarning("NecroZombies plugin not loaded. Zombies mode will be disabled. Install NecroZombies for the full Black Ops zombies experience!");
+                }
+                else
+                {
+                    Puts("NecroZombies integration active! Black Ops zombies mode enabled.");
+                }
+            }
         }
         
         private void LoadImages()
@@ -868,6 +902,35 @@ namespace Oxide.Plugins
                     victim.Respawn();
                 }
             });
+        }
+        
+        private void OnEntityDeath(BaseCombatEntity entity, HitInfo info)
+        {
+            // Award tokens for zombie/NPC kills
+            if (entity == null || info == null || _tokenEconomy == null) return;
+            
+            // Skip if it's a player (handled by other hook)
+            if (entity is BasePlayer) return;
+            
+            // Check if this is a zombie kill (NPCPlayer or scarecrow types)
+            var npc = entity as NPCPlayer;
+            if (npc == null) return;
+            
+            var attacker = info.InitiatorPlayer;
+            if (attacker != null && attacker.IsConnected && _config.EnableZombiesMode)
+            {
+                // Award tokens for zombie kill
+                _tokenEconomy.AwardTokens(attacker.userID, _config.TokensPerZombieKill);
+                
+                // Track telemetry
+                var session = GetSession(attacker.userID);
+                if (session != null)
+                {
+                    session.Profile.TotalKills++;
+                }
+                
+                LogDebug($"{attacker.displayName} killed a zombie (+{_config.TokensPerZombieKill} tokens)");
+            }
         }
         
         #endregion
@@ -1195,6 +1258,88 @@ namespace Oxide.Plugins
             SendReply(arg, $"Reset progress for player {targetId}");
         }
         
+        [ConsoleCommand("kd.zombies")]
+        private void CmdZombies(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null)
+            {
+                SendReply(arg, "This command must be run by a player");
+                return;
+            }
+            
+            if (!permission.UserHasPermission(player.UserIDString, PERMISSION_ADMIN))
+            {
+                SendReply(arg, "You don't have permission to use this command");
+                return;
+            }
+            
+            if (!arg.HasArgs(1))
+            {
+                SendReply(arg, "Usage: kd.zombies <start|stop|status|spawn> [profile] [spawnset]");
+                SendReply(arg, "  start [profile] [spawnset] - Start zombie wave mode at your location");
+                SendReply(arg, "  stop - Stop zombie wave mode");
+                SendReply(arg, "  status - Check if zombie mode is active");
+                SendReply(arg, "  spawn <amount> [profile] - Spawn zombies at your location");
+                return;
+            }
+            
+            string action = arg.Args[0].ToLower();
+            
+            switch (action)
+            {
+                case "start":
+                    string profile = arg.HasArgs(2) ? arg.Args[1] : _config.ZombiesProfileName;
+                    string spawnSet = arg.HasArgs(3) ? arg.Args[2] : _config.ZombiesSpawnSetName;
+                    
+                    if (_zombieIntegration.StartWaveMode(player.transform.position, profile, spawnSet))
+                    {
+                        SendReply(arg, $"Zombie wave mode started with profile '{profile}'!");
+                    }
+                    else
+                    {
+                        SendReply(arg, "Failed to start zombie wave mode. Is NecroZombies loaded?");
+                    }
+                    break;
+                    
+                case "stop":
+                    if (_zombieIntegration.StopWaveMode())
+                    {
+                        SendReply(arg, "Zombie wave mode stopped.");
+                    }
+                    else
+                    {
+                        SendReply(arg, "Failed to stop zombie wave mode. Is NecroZombies loaded?");
+                    }
+                    break;
+                    
+                case "status":
+                    bool active = _zombieIntegration.IsWaveModeActive();
+                    int count = _zombieIntegration.GetActiveZombieCount();
+                    SendReply(arg, $"Zombie mode active: {active}, Active zombies: {count}");
+                    break;
+                    
+                case "spawn":
+                    int amount = arg.HasArgs(2) && int.TryParse(arg.Args[1], out int a) ? a : 5;
+                    string spawnProfile = arg.HasArgs(3) ? arg.Args[2] : _config.ZombiesProfileName;
+                    
+                    int spawned = _zombieIntegration.SpawnHordeAt(player.transform.position, amount, spawnProfile);
+                    if (spawned > 0)
+                    {
+                        SendReply(arg, $"Spawned {spawned} zombies!");
+                    }
+                    else
+                    {
+                        SendReply(arg, "Failed to spawn zombies. Is NecroZombies loaded?");
+                    }
+                    break;
+                    
+                default:
+                    SendReply(arg, "Unknown action. Use: start, stop, status, or spawn");
+                    break;
+            }
+        }
+        
         #endregion
         
         #region Chat Commands
@@ -1226,9 +1371,65 @@ namespace Oxide.Plugins
                     }
                     break;
                     
+                case "zombies":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to control zombies.");
+                        break;
+                    }
+                    
+                    if (args.Length < 2)
+                    {
+                        SendReply(player, "Usage: /kd zombies <start|stop|status>\n" +
+                            "  start [profile] - Start zombie wave mode\n" +
+                            "  stop - Stop zombie wave mode\n" +
+                            "  status - Check zombie mode status");
+                        break;
+                    }
+                    
+                    string zombieAction = args[1].ToLower();
+                    switch (zombieAction)
+                    {
+                        case "start":
+                            string zombieProfile = args.Length >= 3 ? args[2] : _config.ZombiesProfileName;
+                            if (_zombieIntegration.StartWaveMode(player.transform.position, zombieProfile, _config.ZombiesSpawnSetName))
+                            {
+                                SendReply(player, $"<color=#00ff00>Zombie wave mode started!</color> Profile: {zombieProfile}");
+                            }
+                            else
+                            {
+                                SendReply(player, "<color=#ff0000>Failed to start zombie wave mode. Is NecroZombies loaded?</color>");
+                            }
+                            break;
+                            
+                        case "stop":
+                            if (_zombieIntegration.StopWaveMode())
+                            {
+                                SendReply(player, "<color=#ff5555>Zombie wave mode stopped.</color>");
+                            }
+                            else
+                            {
+                                SendReply(player, "<color=#ff0000>Failed to stop zombie wave mode.</color>");
+                            }
+                            break;
+                            
+                        case "status":
+                            bool isActive = _zombieIntegration.IsWaveModeActive();
+                            int zombieCount = _zombieIntegration.GetActiveZombieCount();
+                            SendReply(player, $"Zombie mode: {(isActive ? "<color=#00ff00>ACTIVE</color>" : "<color=#ff5555>INACTIVE</color>")}\n" +
+                                $"Active zombies: {zombieCount}");
+                            break;
+                            
+                        default:
+                            SendReply(player, "Unknown zombie action. Use: start, stop, status");
+                            break;
+                    }
+                    break;
+                    
                 case "help":
                     SendReply(player, "KillaDome - Full COD Experience\n" +
-                        "Use /kd open to access the lobby");
+                        "Use /kd open to access the lobby\n" +
+                        (player.IsAdmin ? "/kd zombies - Control zombie wave mode" : ""));
                     break;
                     
                 default:
@@ -2249,6 +2450,20 @@ namespace Oxide.Plugins
                 }
                 
                 _plugin.Puts($"Match {_currentMatch.MatchId} started with {_matchQueue.Count} players");
+                
+                // Start zombie wave mode for the Black Ops zombies experience
+                if (_config.EnableZombiesMode && _config.ZombiesAutoStartOnMatch)
+                {
+                    Vector3 spawnCenter = _config.ArenaSpawnPositions.Count > 0 
+                        ? _config.ArenaSpawnPositions[0] 
+                        : new Vector3(0, 100, 500);
+                    
+                    if (_plugin._zombieIntegration.StartWaveMode(spawnCenter, _config.ZombiesProfileName, _config.ZombiesSpawnSetName))
+                    {
+                        _plugin.Puts("Black Ops zombie wave mode activated!");
+                    }
+                }
+                
                 _matchQueue.Clear();
             }
             
@@ -2261,6 +2476,13 @@ namespace Oxide.Plugins
                 
                 _currentMatch.IsActive = false;
                 _currentMatch.EndTime = DateTime.UtcNow;
+                
+                // Stop zombie wave mode when match ends
+                if (_config.EnableZombiesMode)
+                {
+                    _plugin._zombieIntegration.StopWaveMode();
+                    _plugin._zombieIntegration.KillAllZombies();
+                }
                 
                 // Return players to lobby
                 foreach (var player in BasePlayer.activePlayerList)
@@ -4790,6 +5012,220 @@ namespace Oxide.Plugins
             public Dictionary<string, int> GetStats()
             {
                 return new Dictionary<string, int>(_eventCounts);
+            }
+        }
+        
+        #endregion
+        
+        #region Module: ZombieIntegration
+        
+        /// <summary>
+        /// Integration module for NecroZombies plugin - provides the full Black Ops zombies experience.
+        /// Handles communication with NecroZombies public API for zombie wave spawning and control.
+        /// </summary>
+        internal class ZombieIntegration
+        {
+            private KillaDome _plugin;
+            private PluginConfig _config;
+            
+            internal ZombieIntegration(KillaDome plugin, PluginConfig config)
+            {
+                _plugin = plugin;
+                _config = config;
+            }
+            
+            /// <summary>
+            /// Check if NecroZombies plugin is loaded and available
+            /// </summary>
+            public bool IsNecroZombiesLoaded()
+            {
+                return _plugin.NecroZombies != null && _plugin.NecroZombies.IsLoaded;
+            }
+            
+            /// <summary>
+            /// Start zombie wave mode at the specified position.
+            /// This activates the Black Ops style zombie waves with drip spawning.
+            /// </summary>
+            /// <param name="center">Center position for zombie spawns</param>
+            /// <param name="profileName">Zombie profile name (default, runner, brute, etc.)</param>
+            /// <param name="spawnSetName">Optional spawn set name for multiple spawn points</param>
+            /// <returns>True if wave mode started successfully</returns>
+            public bool StartWaveMode(Vector3 center, string profileName = "default", string spawnSetName = null)
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    _plugin.PrintWarning("Cannot start zombie wave mode - NecroZombies plugin not loaded!");
+                    return false;
+                }
+                
+                try
+                {
+                    object result = _plugin.NecroZombies.Call("NecroZombies_StartWaveMode", center, profileName, spawnSetName);
+                    bool success = result != null && (bool)result;
+                    
+                    if (success)
+                    {
+                        _plugin.LogDebug($"Started zombie wave mode at {center} with profile '{profileName}'");
+                    }
+                    
+                    return success;
+                }
+                catch (Exception ex)
+                {
+                    _plugin.PrintError($"Failed to start zombie wave mode: {ex.Message}");
+                    return false;
+                }
+            }
+            
+            /// <summary>
+            /// Stop the zombie wave mode and clean up
+            /// </summary>
+            public bool StopWaveMode()
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    return false;
+                }
+                
+                try
+                {
+                    object result = _plugin.NecroZombies.Call("NecroZombies_StopWaveMode");
+                    _plugin.LogDebug("Stopped zombie wave mode");
+                    return result != null && (bool)result;
+                }
+                catch (Exception ex)
+                {
+                    _plugin.PrintError($"Failed to stop zombie wave mode: {ex.Message}");
+                    return false;
+                }
+            }
+            
+            /// <summary>
+            /// Check if zombie wave mode is currently active
+            /// </summary>
+            public bool IsWaveModeActive()
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    return false;
+                }
+                
+                try
+                {
+                    object result = _plugin.NecroZombies.Call("NecroZombies_IsWaveModeActive");
+                    return result != null && (bool)result;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+            
+            /// <summary>
+            /// Get the count of currently active zombies
+            /// </summary>
+            public int GetActiveZombieCount()
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    return 0;
+                }
+                
+                try
+                {
+                    object result = _plugin.NecroZombies.Call("NecroZombies_GetActiveCount");
+                    return result != null ? (int)result : 0;
+                }
+                catch
+                {
+                    return 0;
+                }
+            }
+            
+            /// <summary>
+            /// Spawn a horde of zombies at the specified position
+            /// </summary>
+            /// <param name="position">Position to spawn zombies</param>
+            /// <param name="amount">Number of zombies to spawn</param>
+            /// <param name="profileName">Zombie profile to use</param>
+            /// <returns>Number of zombies actually spawned</returns>
+            public int SpawnHordeAt(Vector3 position, int amount, string profileName = "default")
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    _plugin.PrintWarning("Cannot spawn zombies - NecroZombies plugin not loaded!");
+                    return 0;
+                }
+                
+                try
+                {
+                    object result = _plugin.NecroZombies.Call("NecroZombies_SpawnHordeAt", position, amount, profileName);
+                    int spawned = result != null ? (int)result : 0;
+                    
+                    if (spawned > 0)
+                    {
+                        _plugin.LogDebug($"Spawned {spawned} zombies at {position} with profile '{profileName}'");
+                    }
+                    
+                    return spawned;
+                }
+                catch (Exception ex)
+                {
+                    _plugin.PrintError($"Failed to spawn zombies: {ex.Message}");
+                    return 0;
+                }
+            }
+            
+            /// <summary>
+            /// Kill all active zombies
+            /// </summary>
+            /// <returns>Number of zombies killed</returns>
+            public int KillAllZombies()
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    return 0;
+                }
+                
+                try
+                {
+                    object result = _plugin.NecroZombies.Call("NecroZombies_KillAll");
+                    int killed = result != null ? (int)result : 0;
+                    
+                    if (killed > 0)
+                    {
+                        _plugin.LogDebug($"Killed {killed} zombies");
+                    }
+                    
+                    return killed;
+                }
+                catch (Exception ex)
+                {
+                    _plugin.PrintError($"Failed to kill zombies: {ex.Message}");
+                    return 0;
+                }
+            }
+            
+            /// <summary>
+            /// Show the Black Ops style "Game Over" banner
+            /// </summary>
+            /// <param name="reason">Reason for game over</param>
+            public void ShowGameOver(string reason = "")
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    return;
+                }
+                
+                try
+                {
+                    _plugin.NecroZombies.Call("NecroZombies_ShowGameOver", reason);
+                    _plugin.LogDebug($"Displayed Game Over banner: {reason}");
+                }
+                catch (Exception ex)
+                {
+                    _plugin.PrintError($"Failed to show game over: {ex.Message}");
+                }
             }
         }
         
