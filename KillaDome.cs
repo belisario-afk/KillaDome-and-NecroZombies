@@ -944,7 +944,7 @@ namespace Oxide.Plugins
         /// Handle player respawn - set spawn position to lobby
         /// This hook is called when a player is about to respawn after death or joining
         /// </summary>
-        private object OnPlayerRespawn(BasePlayer player)
+        private object OnPlayerRespawn(BasePlayer player, BasePlayer.SpawnPoint spawnPoint)
         {
             if (player == null) return null;
             
@@ -964,8 +964,9 @@ namespace Oxide.Plugins
                     if (_config.ArenaSpawnPositions != null && _config.ArenaSpawnPositions.Count > 0)
                     {
                         var spawnPos = _config.ArenaSpawnPositions[UnityEngine.Random.Range(0, _config.ArenaSpawnPositions.Count)];
-                        player.RespawnAt(spawnPos, Quaternion.identity);
-                        return true; // Prevent default spawn
+                        spawnPoint.pos = spawnPos;
+                        spawnPoint.rot = Quaternion.identity;
+                        return spawnPoint;
                     }
                 }
             }
@@ -973,8 +974,9 @@ namespace Oxide.Plugins
             // Default: spawn at lobby position
             if (_config.LobbySpawnPosition != Vector3.zero)
             {
-                player.RespawnAt(_config.LobbySpawnPosition, Quaternion.identity);
-                return true; // Prevent default spawn behavior
+                spawnPoint.pos = _config.LobbySpawnPosition;
+                spawnPoint.rot = Quaternion.identity;
+                return spawnPoint;
             }
             
             return null; // Allow default spawn if no lobby position set
