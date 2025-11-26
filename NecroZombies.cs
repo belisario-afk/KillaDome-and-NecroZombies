@@ -9,7 +9,7 @@ using Newtonsoft.Json;
 // hop-like movement, fire/flies/gore VFX, and CUI wave/stage banners.
 namespace Oxide.Plugins
 {
-    [Info("NecroZombies", "belisario-afk", "2.5.0")]
+    [Info("NecroZombies", "belisario-afk", "2.6.0")]
     [Description("Spawns fast, aggressive scarecrow-based zombies and hellhounds with spawn sets, drip waves, CUI, and horror VFX")]
     public class NecroZombies : RustPlugin
     {
@@ -1244,7 +1244,12 @@ namespace Oxide.Plugins
 
             var waves = _config.Waves;
 
-            if (_currentWaveInitialCount <= 0)
+            // Don't check progress until all zombies for this wave have spawned
+            if (_currentWaveTotalToSpawn > 0)
+                return;
+            
+            // Use the actual spawned count, not the initial target
+            if (_currentWaveSpawned <= 0)
                 return;
 
             int aliveInWave = 0;
@@ -1254,8 +1259,9 @@ namespace Oxide.Plugins
                     aliveInWave++;
             }
 
-            int deadInWave = _currentWaveInitialCount - aliveInWave;
-            float killRatio = (float)deadInWave / _currentWaveInitialCount;
+            // Calculate kills based on how many were actually spawned
+            int deadInWave = _currentWaveSpawned - aliveInWave;
+            float killRatio = (float)deadInWave / _currentWaveSpawned;
 
             if (killRatio >= waves.RequiredKillRatioToAdvance)
             {
@@ -1379,7 +1385,21 @@ namespace Oxide.Plugins
             
             bool isHellhoundWave = IsHellhoundWave(_currentWave);
             string waveType = isHellhoundWave ? "HELLHOUND WAVE" : "WAVE";
-            string hudText = $"<color=#ff4444>{waveType} {_currentWave}</color>\n<color=#ffffff>Zombies: {aliveZombies}</color>";
+            
+            // Show spawning progress or remaining zombies
+            string statusText;
+            if (_currentWaveTotalToSpawn > 0)
+            {
+                statusText = $"Spawning: {_currentWaveSpawned}/{_currentWaveInitialCount}";
+            }
+            else
+            {
+                int killsNeeded = (int)Math.Ceiling(_currentWaveSpawned * _config.Waves.RequiredKillRatioToAdvance);
+                int currentKills = _currentWaveSpawned - aliveZombies;
+                statusText = $"Kill: {currentKills}/{killsNeeded}";
+            }
+            
+            string hudText = $"<color=#ff4444>{waveType} {_currentWave}</color>\\n<color=#ffffff>{statusText}</color>";
             
             string json = BuildWaveHudJson(hudText);
             
