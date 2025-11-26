@@ -9,7 +9,7 @@ using Newtonsoft.Json;
 // hop-like movement, fire/flies/gore VFX, and CUI wave/stage banners.
 namespace Oxide.Plugins
 {
-    [Info("NecroZombies", "belisario-afk", "2.6.0")]
+    [Info("NecroZombies", "belisario-afk", "2.7.0")]
     [Description("Spawns fast, aggressive scarecrow-based zombies and hellhounds with spawn sets, drip waves, CUI, and horror VFX")]
     public class NecroZombies : RustPlugin
     {
@@ -37,28 +37,28 @@ namespace Oxide.Plugins
 
         private class WaveSettings
         {
-            // Total zombies per wave
-            public int BaseCount = 12;
-            public int CountPerWaveIncrease = 4;
+            // Total zombies per wave - Black Ops style: start small, grow steadily
+            public int BaseCount = 6;                 // Wave 1: 6 zombies
+            public int CountPerWaveIncrease = 2;      // +2 per wave (Wave 2: 8, Wave 3: 10, etc.)
 
             // Stat scaling per wave
             public float HealthMultiplierPerWave = 0.1f;
-            public float SpeedMultiplierPerWave = 0.05f;
+            public float SpeedMultiplierPerWave = 0.03f;  // Slower speed increase
 
             public int MaxWaves = 0;              // 0 = endless
 
-            public int MaxActiveZombies = 40;     // global hard cap
+            public int MaxActiveZombies = 24;     // Lower cap for early waves
 
-            // Wave progression logic
-            public float RequiredKillRatioToAdvance = 0.9f;
-            public float WaveStartDelay = 5f;
-            public float WaveTimeoutSeconds = 120f;
+            // Wave progression logic - Black Ops style: ALL zombies must die
+            public float RequiredKillRatioToAdvance = 1.0f;  // 100% - last zombie must die
+            public float WaveStartDelay = 8f;                 // Longer break between waves
+            public float WaveTimeoutSeconds = 0f;             // 0 = no timeout, must kill all
 
-            // Drip spawning inside a wave
-            public int GroupSize = 3;
-            public float SpawnIntervalSeconds = 2.5f;
-            public float SpawnIntervalMinSeconds = 1.0f;
-            public float SpawnIntervalPerWaveMultiplier = 0.9f;
+            // Drip spawning inside a wave - slower spawning for early waves
+            public int GroupSize = 2;                         // Spawn 2 at a time
+            public float SpawnIntervalSeconds = 4.0f;         // 4 seconds between spawns
+            public float SpawnIntervalMinSeconds = 1.5f;      // Minimum interval
+            public float SpawnIntervalPerWaveMultiplier = 0.92f; // Gets faster each wave
 
             // CUI wave banner settings
             public bool EnableWaveBanner = true;
@@ -1259,31 +1259,47 @@ namespace Oxide.Plugins
                     aliveInWave++;
             }
 
-            // Calculate kills based on how many were actually spawned
-            int deadInWave = _currentWaveSpawned - aliveInWave;
-            float killRatio = (float)deadInWave / _currentWaveSpawned;
-
-            if (killRatio >= waves.RequiredKillRatioToAdvance)
+            // Black Ops style: ALL zombies must be dead to advance
+            // When RequiredKillRatioToAdvance is 1.0, we check if aliveInWave == 0
+            bool waveCleared = false;
+            if (waves.RequiredKillRatioToAdvance >= 1.0f)
             {
-                Puts($"[NecroZombies] Wave {_currentWave} kill ratio reached ({killRatio:P0}). Next wave in {waves.WaveStartDelay:F1}s.");
+                // Must kill every single zombie
+                waveCleared = (aliveInWave == 0);
+            }
+            else
+            {
+                // Legacy ratio-based check
+                int deadInWave = _currentWaveSpawned - aliveInWave;
+                float killRatio = (float)deadInWave / _currentWaveSpawned;
+                waveCleared = (killRatio >= waves.RequiredKillRatioToAdvance);
+            }
+
+            if (waveCleared)
+            {
+                Puts($"[NecroZombies] Wave {_currentWave} cleared! All zombies eliminated. Next wave in {waves.WaveStartDelay:F1}s.");
                 _waveCheckTimer?.Destroy();
                 _waveCheckTimer = null;
 
                 // Intermission banner between waves
-                ShowStageBanner("INTERMISSION", $"Wave {_currentWave} cleared", waves.WaveStartDelay);
+                ShowStageBanner("WAVE COMPLETE", $"Prepare for Wave {_currentWave + 1}", waves.WaveStartDelay);
                 timer.Once(waves.WaveStartDelay, StartNextWave);
                 return;
             }
 
-            float elapsed = Time.realtimeSinceStartup - _currentWaveStartTime;
-            if (elapsed >= waves.WaveTimeoutSeconds && waves.WaveTimeoutSeconds > 0f)
+            // Only apply timeout if configured (0 = no timeout, Black Ops style)
+            if (waves.WaveTimeoutSeconds > 0f)
             {
-                Puts($"[NecroZombies] Wave {_currentWave} timed out after {elapsed:F1}s. Forcing next wave in {waves.WaveStartDelay:F1}s.");
-                _waveCheckTimer?.Destroy();
-                _waveCheckTimer = null;
+                float elapsed = Time.realtimeSinceStartup - _currentWaveStartTime;
+                if (elapsed >= waves.WaveTimeoutSeconds)
+                {
+                    Puts($"[NecroZombies] Wave {_currentWave} timed out after {elapsed:F1}s. Forcing next wave in {waves.WaveStartDelay:F1}s.");
+                    _waveCheckTimer?.Destroy();
+                    _waveCheckTimer = null;
 
-                ShowStageBanner("INTERMISSION", "Time's up", waves.WaveStartDelay);
-                timer.Once(waves.WaveStartDelay, StartNextWave);
+                    ShowStageBanner("INTERMISSION", "Time's up", waves.WaveStartDelay);
+                    timer.Once(waves.WaveStartDelay, StartNextWave);
+                }
             }
         }
 
@@ -1386,17 +1402,17 @@ namespace Oxide.Plugins
             bool isHellhoundWave = IsHellhoundWave(_currentWave);
             string waveType = isHellhoundWave ? "HELLHOUND WAVE" : "WAVE";
             
-            // Show spawning progress or remaining zombies
+            // Black Ops style HUD - show zombies remaining
             string statusText;
             if (_currentWaveTotalToSpawn > 0)
             {
-                statusText = $"Spawning: {_currentWaveSpawned}/{_currentWaveInitialCount}";
+                // Still spawning zombies
+                statusText = $"Incoming: {_currentWaveTotalToSpawn}";
             }
             else
             {
-                int killsNeeded = (int)Math.Ceiling(_currentWaveSpawned * _config.Waves.RequiredKillRatioToAdvance);
-                int currentKills = _currentWaveSpawned - aliveZombies;
-                statusText = $"Kill: {currentKills}/{killsNeeded}";
+                // All spawned, show remaining
+                statusText = $"Remaining: {aliveZombies}";
             }
             
             string hudText = $"<color=#ff4444>{waveType} {_currentWave}</color>\\n<color=#ffffff>{statusText}</color>";
