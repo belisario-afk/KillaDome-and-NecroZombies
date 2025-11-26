@@ -9,7 +9,7 @@ using Newtonsoft.Json;
 // hop-like movement, fire/flies/gore VFX, and CUI wave/stage banners.
 namespace Oxide.Plugins
 {
-    [Info("NecroZombies", "belisario-afk", "3.0.0")]
+    [Info("NecroZombies", "belisario-afk", "3.1.0")]
     [Description("Spawns Necro Zombie, Runner, Brute, and Hellhound variants with Black Ops style waves")]
     public class NecroZombies : RustPlugin
     {
@@ -121,7 +121,7 @@ namespace Oxide.Plugins
                 PrefabType = "scarecrow"
             };
 
-            // Necro Runner - Uses zombie prefab with hoodie outfit
+            // Necro Runner - Fast scarecrow with hoodie outfit
             _config.Profiles["runner"] = new ZombieProfile
             {
                 ProfileName = "runner",
@@ -139,7 +139,7 @@ namespace Oxide.Plugins
                 PantsSkinId = 1883629284,
                 DisplayName = "Necro Runner",
                 AlwaysOnFire = false,  // No fire, stealthy look
-                PrefabType = "zombie"
+                PrefabType = "scarecrow"  // Use scarecrow for reliable brain/AI
             };
 
             // Necro Brute - Explosive head, no melee, wellipets + jumpsuit + mummy
@@ -1063,17 +1063,24 @@ namespace Oxide.Plugins
                     wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
                     wolf.SetFact(BaseNpc.Facts.IsAfraid, 0);
                     
+                    // Keep maximum aggression stats
+                    wolf.Stats.VisionRange = 200f;
+                    wolf.Stats.AggressionRange = 200f;
+                    wolf.Stats.DeaggroRange = 500f;
+                    
                     // Find ANY player on the map
                     var nearestPlayer = FindNearestPlayer(wolf.transform.position, 500f);
                     if (nearestPlayer != null)
                     {
                         wolf.AttackTarget = nearestPlayer;
+                        wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
+                        
+                        // Force wolf to chase player by setting destination
+                        if (wolf.NavAgent != null && wolf.NavAgent.isOnNavMesh)
+                        {
+                            wolf.NavAgent.SetDestination(nearestPlayer.transform.position);
+                        }
                     }
-                    
-                    // Keep maximum aggression stats
-                    wolf.Stats.VisionRange = 200f;
-                    wolf.Stats.AggressionRange = 200f;
-                    wolf.Stats.DeaggroRange = 500f;
                 }
             }
             
@@ -1089,13 +1096,14 @@ namespace Oxide.Plugins
             if (_explosiveBrutes.Count == 0)
                 return;
             
+            var toRemove = new List<BaseEntity>();
             var toExplode = new List<BaseEntity>();
             
             foreach (var entity in _explosiveBrutes)
             {
                 if (entity == null || entity.IsDestroyed)
                 {
-                    toExplode.Add(entity);
+                    toRemove.Add(entity);
                     continue;
                 }
                 
@@ -1110,33 +1118,43 @@ namespace Oxide.Plugins
                     float dist = Vector3.Distance(player.transform.position, brutePos);
                     if (dist <= 2.5f)  // Explosion proximity
                     {
-                        // BOOM! Spawn beancan grenade at brute's head position
-                        Vector3 explosionPos = brutePos + Vector3.up * 1.5f;  // Head height
-                        
-                        BaseEntity grenade = GameManager.server.CreateEntity(BeancanPrefab, explosionPos, Quaternion.identity, true);
-                        if (grenade != null)
-                        {
-                            grenade.Spawn();
-                            
-                            // Make it explode immediately
-                            var timedExplosive = grenade as TimedExplosive;
-                            if (timedExplosive != null)
-                            {
-                                timedExplosive.SetFuse(0.1f);  // Explode almost immediately
-                            }
-                        }
-                        
-                        // Kill the brute
                         toExplode.Add(entity);
-                        entity.Kill();
                         break;
                     }
                 }
             }
             
-            foreach (var entity in toExplode)
+            // Remove dead/destroyed brutes
+            foreach (var entity in toRemove)
             {
                 _explosiveBrutes.Remove(entity);
+            }
+            
+            // Explode brutes that got close to players
+            foreach (var entity in toExplode)
+            {
+                if (entity == null || entity.IsDestroyed)
+                    continue;
+                    
+                Vector3 explosionPos = entity.transform.position + Vector3.up * 1.5f;  // Head height
+                
+                // BOOM! Spawn beancan grenade at brute's head position
+                BaseEntity grenade = GameManager.server.CreateEntity(BeancanPrefab, explosionPos, Quaternion.identity, true);
+                if (grenade != null)
+                {
+                    grenade.Spawn();
+                    
+                    // Make it explode immediately
+                    var timedExplosive = grenade as TimedExplosive;
+                    if (timedExplosive != null)
+                    {
+                        timedExplosive.SetFuse(0.1f);  // Explode almost immediately
+                    }
+                }
+                
+                // Kill the brute and remove from tracking
+                _explosiveBrutes.Remove(entity);
+                entity.Kill();
             }
         }
 
@@ -1340,19 +1358,39 @@ namespace Oxide.Plugins
                     }
                     else
                     {
-                        // normal zombies as mix
-                        var baseProfile = GetProfile(_waveProfileName);
+                        // Mix zombie variants during hellhound wave too: default (60%), runner (25%), brute (15%)
+                        float variantRoll = UnityEngine.Random.Range(0f, 1f);
+                        string variantName;
+                        if (variantRoll < 0.60f)
+                            variantName = "default";
+                        else if (variantRoll < 0.85f)
+                            variantName = "runner";
+                        else
+                            variantName = "brute";
+                        
+                        var baseProfile = GetProfile(variantName);
+                        float healthMultiplier = 1f + _config.Waves.HealthMultiplierPerWave * (_currentWave - 1);
+                        
                         var waveProfile = new ZombieProfile
                         {
                             ProfileName = baseProfile.ProfileName,
+                            PrefabType = baseProfile.PrefabType,
                             MeleeShortname = baseProfile.MeleeShortname,
                             MeleeSkinId = baseProfile.MeleeSkinId,
                             ClothingShortname = baseProfile.ClothingShortname,
                             ClothingSkinId = baseProfile.ClothingSkinId,
-                            DisplayName = $"{baseProfile.DisplayName} [Wave {_currentWave}]",
-                            Health = baseProfile.Health * (1f + _config.Waves.HealthMultiplierPerWave * (_currentWave - 1)),
+                            HeadwearShortname = baseProfile.HeadwearShortname,
+                            HeadwearSkinId = baseProfile.HeadwearSkinId,
+                            ShirtShortname = baseProfile.ShirtShortname,
+                            ShirtSkinId = baseProfile.ShirtSkinId,
+                            PantsShortname = baseProfile.PantsShortname,
+                            PantsSkinId = baseProfile.PantsSkinId,
+                            DisplayName = baseProfile.DisplayName,
+                            Health = baseProfile.Health * healthMultiplier,
                             Speed = baseProfile.Speed * (1f + _config.Waves.SpeedMultiplierPerWave * (_currentWave - 1)),
-                            AlwaysOnFire = baseProfile.AlwaysOnFire
+                            AlwaysOnFire = baseProfile.AlwaysOnFire,
+                            ExplodeOnProximity = baseProfile.ExplodeOnProximity,
+                            ExplosionProximity = baseProfile.ExplosionProximity
                         };
 
                         spawnedOk = SpawnNecroZombie(spawnPos, waveProfile, trackForWave: true);
@@ -1360,18 +1398,39 @@ namespace Oxide.Plugins
                 }
                 else
                 {
-                    var baseProfile = GetProfile(_waveProfileName);
+                    // Mix of zombie variants: default (60%), runner (25%), brute (15%)
+                    float roll = UnityEngine.Random.Range(0f, 1f);
+                    string variantName;
+                    if (roll < 0.60f)
+                        variantName = "default";
+                    else if (roll < 0.85f)
+                        variantName = "runner";
+                    else
+                        variantName = "brute";
+                    
+                    var baseProfile = GetProfile(variantName);
+                    float healthMultiplier = 1f + _config.Waves.HealthMultiplierPerWave * (_currentWave - 1);
+                    
                     var waveProfile = new ZombieProfile
                     {
                         ProfileName = baseProfile.ProfileName,
+                        PrefabType = baseProfile.PrefabType,
                         MeleeShortname = baseProfile.MeleeShortname,
                         MeleeSkinId = baseProfile.MeleeSkinId,
                         ClothingShortname = baseProfile.ClothingShortname,
                         ClothingSkinId = baseProfile.ClothingSkinId,
-                        DisplayName = $"{baseProfile.DisplayName} [Wave {_currentWave}]",
-                        Health = baseProfile.Health * (1f + _config.Waves.HealthMultiplierPerWave * (_currentWave - 1)),
+                        HeadwearShortname = baseProfile.HeadwearShortname,
+                        HeadwearSkinId = baseProfile.HeadwearSkinId,
+                        ShirtShortname = baseProfile.ShirtShortname,
+                        ShirtSkinId = baseProfile.ShirtSkinId,
+                        PantsShortname = baseProfile.PantsShortname,
+                        PantsSkinId = baseProfile.PantsSkinId,
+                        DisplayName = baseProfile.DisplayName,
+                        Health = baseProfile.Health * healthMultiplier,
                         Speed = baseProfile.Speed * (1f + _config.Waves.SpeedMultiplierPerWave * (_currentWave - 1)),
-                        AlwaysOnFire = baseProfile.AlwaysOnFire
+                        AlwaysOnFire = baseProfile.AlwaysOnFire,
+                        ExplodeOnProximity = baseProfile.ExplodeOnProximity,
+                        ExplosionProximity = baseProfile.ExplosionProximity
                     };
 
                     spawnedOk = SpawnNecroZombie(spawnPos, waveProfile, trackForWave: true);
