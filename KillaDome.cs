@@ -953,12 +953,12 @@ namespace Oxide.Plugins
             {
                 var mode = _gameModeSystem.GetPlayerMode(player.userID);
                 
-                if (mode == GameModeType.Zombies)
+                if (mode == GameMode.Zombies)
                 {
                     // Zombies mode: teleport to spectate position (handled by GameModeSystem)
                     return null; // Let default respawn happen, then GameModeSystem will teleport
                 }
-                else if (mode == GameModeType.Normal)
+                else if (mode == GameMode.Normal)
                 {
                     // Normal mode: respawn in arena
                     if (_config.ArenaSpawnPositions != null && _config.ArenaSpawnPositions.Count > 0)
@@ -6063,6 +6063,18 @@ namespace Oxide.Plugins
             /// Check if normal match is active
             /// </summary>
             public bool IsNormalMatchActive() => _normalMatchActive;
+            
+            /// <summary>
+            /// Get the game mode a player is currently in
+            /// </summary>
+            public GameMode GetPlayerMode(ulong steamId)
+            {
+                if (_zombiesQueue.Contains(steamId) || _spectatingPlayers.Contains(steamId))
+                    return GameMode.Zombies;
+                if (_normalQueue.Contains(steamId))
+                    return GameMode.Normal;
+                return GameMode.None;
+            }
             
             /// <summary>
             /// Get pending confirmation for a player

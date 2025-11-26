@@ -153,9 +153,9 @@ namespace Oxide.Plugins
                 ClothingShortname = "halloween.mummysuit",
                 ClothingSkinId = 0,
                 HeadwearShortname = "hat.wolf",  // Wellipets hat
-                HeadwearSkinId = -507248640,
+                HeadwearSkinId = (long)-507248640,
                 ShirtShortname = "jumpsuit.suit",
-                ShirtSkinId = -97459906,
+                ShirtSkinId = (long)-97459906,
                 PantsShortname = "",
                 PantsSkinId = 0,
                 DisplayName = "Necro Brute",
