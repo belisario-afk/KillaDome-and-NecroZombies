@@ -9,8 +9,8 @@ using Newtonsoft.Json;
 // hop-like movement, fire/flies/gore VFX, and CUI wave/stage banners.
 namespace Oxide.Plugins
 {
-    [Info("NecroZombies", "belisario-afk", "2.8.0")]
-    [Description("Spawns fast, aggressive scarecrow-based zombies and hellhounds with spawn sets, drip waves, CUI, and horror VFX")]
+    [Info("NecroZombies", "belisario-afk", "3.0.0")]
+    [Description("Spawns Necro Zombie, Runner, Brute, and Hellhound variants with Black Ops style waves")]
     public class NecroZombies : RustPlugin
     {
         #region Configuration
@@ -27,12 +27,30 @@ namespace Oxide.Plugins
             public string MeleeShortname = "knife.bone";
             public ulong MeleeSkinId = 3612162757;
 
+            // Primary clothing item
             public string ClothingShortname = "halloween.mummysuit";
             public ulong ClothingSkinId = 0;
+            
+            // Additional clothing items for complex outfits
+            public string HeadwearShortname = "";
+            public long HeadwearSkinId = 0;
+            
+            public string ShirtShortname = "";
+            public long ShirtSkinId = 0;
+            
+            public string PantsShortname = "";
+            public long PantsSkinId = 0;
 
             public string DisplayName = "Necro Zombie";
 
             public bool AlwaysOnFire = true;
+            
+            // Prefab to use (scarecrow or zombie)
+            public string PrefabType = "scarecrow";  // "scarecrow" or "zombie"
+            
+            // Brute's explosive ability
+            public bool ExplodeOnProximity = false;
+            public float ExplosionProximity = 2.5f;  // Distance to trigger explosion
         }
 
         private class WaveSettings
@@ -99,9 +117,11 @@ namespace Oxide.Plugins
                 ClothingShortname = _config.ClothingShortname,
                 ClothingSkinId = _config.ClothingSkinId,
                 DisplayName = _config.ZombieName,
-                AlwaysOnFire = true
+                AlwaysOnFire = true,
+                PrefabType = "scarecrow"
             };
 
+            // Necro Runner - Uses zombie prefab with hoodie outfit
             _config.Profiles["runner"] = new ZombieProfile
             {
                 ProfileName = "runner",
@@ -109,23 +129,40 @@ namespace Oxide.Plugins
                 Speed = 10f,
                 MeleeShortname = "knife.bone",
                 MeleeSkinId = _config.MeleeSkinId,
-                ClothingShortname = "halloween.mummysuit",
+                ClothingShortname = "",  // No primary clothing
                 ClothingSkinId = 0,
+                HeadwearShortname = "mask.balaclava",
+                HeadwearSkinId = 539536877,
+                ShirtShortname = "hoodie",
+                ShirtSkinId = 10052,
+                PantsShortname = "pants",
+                PantsSkinId = 1883629284,
                 DisplayName = "Necro Runner",
-                AlwaysOnFire = true
+                AlwaysOnFire = false,  // No fire, stealthy look
+                PrefabType = "zombie"
             };
 
+            // Necro Brute - Explosive head, no melee, wellipets + jumpsuit + mummy
             _config.Profiles["brute"] = new ZombieProfile
             {
                 ProfileName = "brute",
-                Health = 250f,
-                Speed = 5f,
-                MeleeShortname = "mace.base",
+                Health = 300f,
+                Speed = 4f,
+                MeleeShortname = "",  // No melee weapon
                 MeleeSkinId = 0,
                 ClothingShortname = "halloween.mummysuit",
                 ClothingSkinId = 0,
+                HeadwearShortname = "hat.wolf",  // Wellipets hat
+                HeadwearSkinId = -507248640,
+                ShirtShortname = "jumpsuit.suit",
+                ShirtSkinId = -97459906,
+                PantsShortname = "",
+                PantsSkinId = 0,
                 DisplayName = "Necro Brute",
-                AlwaysOnFire = true
+                AlwaysOnFire = true,
+                PrefabType = "scarecrow",
+                ExplodeOnProximity = true,
+                ExplosionProximity = 2.5f
             };
 
             _config.Profiles["burner"] = new ZombieProfile
@@ -138,7 +175,8 @@ namespace Oxide.Plugins
                 ClothingShortname = "halloween.mummysuit",
                 ClothingSkinId = 0,
                 DisplayName = "Necro Burner",
-                AlwaysOnFire = true
+                AlwaysOnFire = true,
+                PrefabType = "scarecrow"
             };
 
             _config.Profiles["stalker"] = new ZombieProfile
@@ -151,7 +189,8 @@ namespace Oxide.Plugins
                 ClothingShortname = "halloween.mummysuit",
                 ClothingSkinId = 0,
                 DisplayName = "Necro Stalker",
-                AlwaysOnFire = true
+                AlwaysOnFire = true,
+                PrefabType = "scarecrow"
             };
 
             // Hellhound profile (used for wolves)
@@ -237,8 +276,12 @@ namespace Oxide.Plugins
 
         #region Constants & State
 
-        private const string ZombiePrefab = "assets/prefabs/npc/scarecrow/scarecrow_dungeonnoroam.prefab";
+        private const string ScarecrowPrefab = "assets/prefabs/npc/scarecrow/scarecrow_dungeonnoroam.prefab";
+        private const string ZombiePrefab = "assets/rust.ai/agents/zombie/zombie.prefab";
         private const string WolfPrefab = "assets/rust.ai/agents/wolf/wolf.prefab";
+        
+        // Explosive prefab for Brute
+        private const string BeancanPrefab = "assets/prefabs/weapons/beancan grenade/grenade.beancan.deployed.prefab";
 
         private const float RaycastMaxDistance = 200f;
 
@@ -282,6 +325,7 @@ namespace Oxide.Plugins
         private Timer _hopTimer;
         private Timer _hellhoundTimer;
         private Timer _waveHudTimer;
+        private Timer _bruteTimer;
 
         private bool _loggedTypeOnce;
 
@@ -291,9 +335,11 @@ namespace Oxide.Plugins
 
         private void Init()
         {
+            Puts($"[NecroZombies] Using scarecrow prefab: {ScarecrowPrefab}");
             Puts($"[NecroZombies] Using zombie prefab: {ZombiePrefab}");
             _hopTimer = timer.Every(1f, HopTick);
             _hellhoundTimer = timer.Every(0.5f, HellhoundTick);
+            _bruteTimer = timer.Every(0.3f, BruteTick);  // Check brute proximity every 0.3s
         }
 
         private void Unload()
@@ -303,6 +349,9 @@ namespace Oxide.Plugins
             
             _hellhoundTimer?.Destroy();
             _hellhoundTimer = null;
+            
+            _bruteTimer?.Destroy();
+            _bruteTimer = null;
             
             _waveHudTimer?.Destroy();
             _waveHudTimer = null;
@@ -332,6 +381,9 @@ namespace Oxide.Plugins
             
             if (_hellhoundsOnFire.Contains(be))
                 _hellhoundsOnFire.Remove(be);
+                
+            if (_explosiveBrutes.Contains(be))
+                _explosiveBrutes.Remove(be);
         }
 
         private void OnEntityTakeDamage(BaseCombatEntity entity, HitInfo info)
@@ -616,6 +668,9 @@ namespace Oxide.Plugins
             
             return nearestPlayer;
         }
+        
+        // Track brutes for proximity explosion check
+        private HashSet<BaseEntity> _explosiveBrutes = new HashSet<BaseEntity>();
 
         private bool SpawnNecroZombie(Vector3 position, ZombieProfile profile, bool trackForWave)
         {
@@ -624,10 +679,15 @@ namespace Oxide.Plugins
             if (_activeZombies.Count >= waves.MaxActiveZombies)
                 return false;
 
-            BaseEntity entity = GameManager.server.CreateEntity(ZombiePrefab, position, Quaternion.identity, true);
+            // Choose prefab based on profile type
+            string prefabPath = ScarecrowPrefab;
+            if (profile.PrefabType == "zombie")
+                prefabPath = ZombiePrefab;
+
+            BaseEntity entity = GameManager.server.CreateEntity(prefabPath, position, Quaternion.identity, true);
             if (entity == null)
             {
-                PrintWarning($"[NecroZombies] Failed to create entity. Prefab path: {ZombiePrefab}");
+                PrintWarning($"[NecroZombies] Failed to create entity. Prefab path: {prefabPath}");
                 return false;
             }
 
@@ -636,11 +696,15 @@ namespace Oxide.Plugins
 
             if (trackForWave)
                 _currentWaveZombies.Add(entity);
+                
+            // Track brutes for explosion proximity check
+            if (profile.ExplodeOnProximity)
+                _explosiveBrutes.Add(entity);
 
             if (!_loggedTypeOnce)
             {
                 _loggedTypeOnce = true;
-                Puts($"[NecroZombies] Spawned entity type: {entity.GetType().FullName}");
+                Puts($"[NecroZombies] Spawned entity type: {entity.GetType().FullName} ({profile.ProfileName})");
             }
 
             if (profile.AlwaysOnFire)
@@ -766,6 +830,7 @@ namespace Oxide.Plugins
                 PrintWarning($"[NecroZombies] Error stripping NPC inventory: {e}");
             }
 
+            // Add melee weapon (if configured)
             if (!string.IsNullOrEmpty(profile.MeleeShortname))
             {
                 Item melee = ItemManager.CreateByName(profile.MeleeShortname, 1, profile.MeleeSkinId);
@@ -781,6 +846,7 @@ namespace Oxide.Plugins
                 }
             }
 
+            // Add primary clothing (mummy suit, etc.)
             if (!string.IsNullOrEmpty(profile.ClothingShortname))
             {
                 Item clothing = ItemManager.CreateByName(profile.ClothingShortname, 1, profile.ClothingSkinId);
@@ -792,6 +858,42 @@ namespace Oxide.Plugins
                 else
                 {
                     PrintWarning($"[NecroZombies] Failed to create clothing item: '{profile.ClothingShortname}'");
+                }
+            }
+            
+            // Add headwear (balaclava, wellipets hat, etc.)
+            if (!string.IsNullOrEmpty(profile.HeadwearShortname))
+            {
+                ulong skinId = profile.HeadwearSkinId >= 0 ? (ulong)profile.HeadwearSkinId : (ulong)(-profile.HeadwearSkinId);
+                Item headwear = ItemManager.CreateByName(profile.HeadwearShortname, 1, skinId);
+                if (headwear != null)
+                {
+                    headwear.condition = headwear.maxCondition;
+                    headwear.MoveToContainer(npc.inventory.containerWear);
+                }
+            }
+            
+            // Add shirt (hoodie, jumpsuit, etc.)
+            if (!string.IsNullOrEmpty(profile.ShirtShortname))
+            {
+                ulong skinId = profile.ShirtSkinId >= 0 ? (ulong)profile.ShirtSkinId : (ulong)(-profile.ShirtSkinId);
+                Item shirt = ItemManager.CreateByName(profile.ShirtShortname, 1, skinId);
+                if (shirt != null)
+                {
+                    shirt.condition = shirt.maxCondition;
+                    shirt.MoveToContainer(npc.inventory.containerWear);
+                }
+            }
+            
+            // Add pants
+            if (!string.IsNullOrEmpty(profile.PantsShortname))
+            {
+                ulong skinId = profile.PantsSkinId >= 0 ? (ulong)profile.PantsSkinId : (ulong)(-profile.PantsSkinId);
+                Item pants = ItemManager.CreateByName(profile.PantsShortname, 1, skinId);
+                if (pants != null)
+                {
+                    pants.condition = pants.maxCondition;
+                    pants.MoveToContainer(npc.inventory.containerWear);
                 }
             }
 
@@ -978,6 +1080,63 @@ namespace Oxide.Plugins
             foreach (var entity in toRemove)
             {
                 _hellhoundsOnFire.Remove(entity);
+            }
+        }
+        
+        // Check brutes for proximity to players - explode if too close
+        private void BruteTick()
+        {
+            if (_explosiveBrutes.Count == 0)
+                return;
+            
+            var toExplode = new List<BaseEntity>();
+            
+            foreach (var entity in _explosiveBrutes)
+            {
+                if (entity == null || entity.IsDestroyed)
+                {
+                    toExplode.Add(entity);
+                    continue;
+                }
+                
+                Vector3 brutePos = entity.transform.position;
+                
+                // Check if any player is within explosion proximity
+                foreach (var player in BasePlayer.activePlayerList)
+                {
+                    if (player == null || player.IsDead() || player.IsSleeping())
+                        continue;
+                    
+                    float dist = Vector3.Distance(player.transform.position, brutePos);
+                    if (dist <= 2.5f)  // Explosion proximity
+                    {
+                        // BOOM! Spawn beancan grenade at brute's head position
+                        Vector3 explosionPos = brutePos + Vector3.up * 1.5f;  // Head height
+                        
+                        BaseEntity grenade = GameManager.server.CreateEntity(BeancanPrefab, explosionPos, Quaternion.identity, true);
+                        if (grenade != null)
+                        {
+                            grenade.Spawn();
+                            
+                            // Make it explode immediately
+                            var timedExplosive = grenade as TimedExplosive;
+                            if (timedExplosive != null)
+                            {
+                                timedExplosive.SetFuse(0.1f);  // Explode almost immediately
+                            }
+                        }
+                        
+                        // Kill the brute
+                        toExplode.Add(entity);
+                        entity.Kill();
+                        break;
+                    }
+                }
+            }
+            
+            foreach (var entity in toExplode)
+            {
+                _explosiveBrutes.Remove(entity);
             }
         }
 
