@@ -1224,36 +1224,52 @@ namespace Oxide.Plugins
 
             Puts($"[NecroZombies] Starting wave mode - profile: '{profileName}', spawnSet: '{spawnSetName ?? "null"}' -> '{_waveSpawnSetName ?? "null"}'");
             
-            if (_waveSpawnSetName != null)
+            // Debug: list all available spawn sets
+            if (_config.SpawnSets != null && _config.SpawnSets.Count > 0)
             {
-                // Debug: list all available spawn sets
-                if (_config.SpawnSets != null && _config.SpawnSets.Count > 0)
-                {
-                    Puts($"[NecroZombies] Available spawn sets: {string.Join(", ", _config.SpawnSets.Keys)}");
-                }
-                else
-                {
-                    Puts("[NecroZombies] No spawn sets in config.");
-                }
+                Puts($"[NecroZombies] Available spawn sets: {string.Join(", ", _config.SpawnSets.Keys)}");
                 
-                if (_config.SpawnSets == null || !_config.SpawnSets.ContainsKey(_waveSpawnSetName) ||
-                    _config.SpawnSets[_waveSpawnSetName].Count == 0)
+                // Zombies ONLY spawn at /zspawnadd points - find a valid set
+                bool foundValidSet = false;
+                
+                // First try the specified spawn set
+                if (_waveSpawnSetName != null && _config.SpawnSets.ContainsKey(_waveSpawnSetName) && 
+                    _config.SpawnSets[_waveSpawnSetName].Count > 0)
                 {
-                    PrintWarning($"[NecroZombies] Spawn set '{_waveSpawnSetName}' not found or empty, falling back to single center at {center}.");
-                    _waveSpawnSetName = null;
-                }
-                else
-                {
-                    Puts($"[NecroZombies] Using spawn set '{_waveSpawnSetName}' with {_config.SpawnSets[_waveSpawnSetName].Count} point(s).");
+                    foundValidSet = true;
+                    Puts($"[NecroZombies] Using specified spawn set '{_waveSpawnSetName}' with {_config.SpawnSets[_waveSpawnSetName].Count} point(s).");
                     foreach (var p in _config.SpawnSets[_waveSpawnSetName])
                     {
                         Puts($"[NecroZombies]   Point: ({p.x:F1}, {p.y:F1}, {p.z:F1})");
                     }
                 }
+                else
+                {
+                    // Try to find any valid spawn set
+                    foreach (var kvp in _config.SpawnSets)
+                    {
+                        if (kvp.Value != null && kvp.Value.Count > 0)
+                        {
+                            _waveSpawnSetName = kvp.Key;
+                            foundValidSet = true;
+                            Puts($"[NecroZombies] Using first available spawn set '{_waveSpawnSetName}' with {kvp.Value.Count} point(s).");
+                            foreach (var p in kvp.Value)
+                            {
+                                Puts($"[NecroZombies]   Point: ({p.x:F1}, {p.y:F1}, {p.z:F1})");
+                            }
+                            break;
+                        }
+                    }
+                }
+                
+                if (!foundValidSet)
+                {
+                    PrintWarning("[NecroZombies] No valid spawn sets found! Use /zspawnadd <setname> to add spawn points. Zombies will not spawn.");
+                }
             }
             else
             {
-                Puts($"[NecroZombies] No spawn set specified, using fallback center at {center}.");
+                PrintWarning("[NecroZombies] No spawn sets configured! Use /zspawnadd <setname> to add spawn points. Zombies will not spawn.");
             }
 
             _currentWaveZombies.Clear();
@@ -1342,26 +1358,56 @@ namespace Oxide.Plugins
         // Track which spawn point to use next (round-robin)
         private int _spawnPointIndex = 0;
         
+        /// <summary>
+        /// Returns a spawn position ONLY from configured spawn sets.
+        /// Returns Vector3.zero if no valid spawn set is configured.
+        /// Zombies ONLY spawn at /zspawnadd points, never near players or fallback positions.
+        /// </summary>
         private Vector3 GetRandomSpawnPosition()
         {
+            // Find ANY valid spawn set with points
+            List<Vector3> spawnPoints = null;
+            
+            // First try the specified spawn set
             if (_waveSpawnSetName != null &&
                 _config.SpawnSets != null &&
-                _config.SpawnSets.TryGetValue(_waveSpawnSetName, out var list) &&
-                list != null &&
-                list.Count > 0)
+                _config.SpawnSets.TryGetValue(_waveSpawnSetName, out var specificList) &&
+                specificList != null &&
+                specificList.Count > 0)
+            {
+                spawnPoints = specificList;
+            }
+            // Otherwise try to find ANY spawn set with points
+            else if (_config.SpawnSets != null && _config.SpawnSets.Count > 0)
+            {
+                foreach (var kvp in _config.SpawnSets)
+                {
+                    if (kvp.Value != null && kvp.Value.Count > 0)
+                    {
+                        spawnPoints = kvp.Value;
+                        _waveSpawnSetName = kvp.Key;  // Use this set
+                        Puts($"[NecroZombies] Using first available spawn set '{kvp.Key}' with {kvp.Value.Count} point(s)");
+                        break;
+                    }
+                }
+            }
+            
+            // If we found valid spawn points, use them
+            if (spawnPoints != null && spawnPoints.Count > 0)
             {
                 // Round-robin through spawn points instead of random
                 // This ensures all spawn points are used evenly
-                _spawnPointIndex = (_spawnPointIndex + 1) % list.Count;
-                var point = list[_spawnPointIndex];
+                _spawnPointIndex = (_spawnPointIndex + 1) % spawnPoints.Count;
+                var point = spawnPoints[_spawnPointIndex];
                 
-                // Small random offset around the spawn point
+                // Small random offset around the spawn point (1-2m spread)
                 Vector2 circle = UnityEngine.Random.insideUnitCircle * UnityEngine.Random.Range(0.5f, 2f);
                 return point + new Vector3(circle.x, 0f, circle.y);
             }
-
-            Vector2 fallbackCircle = UnityEngine.Random.insideUnitCircle * UnityEngine.Random.Range(3f, 6f);
-            return _fallbackCenter + new Vector3(fallbackCircle.x, 0f, fallbackCircle.y);
+            
+            // NO fallback - zombies ONLY spawn at configured spawn points
+            // Return Vector3.zero to signal no valid spawn position
+            return Vector3.zero;
         }
         
         /// <summary>
@@ -1455,6 +1501,15 @@ namespace Oxide.Plugins
                     break;
 
                 Vector3 spawnPos = GetRandomSpawnPosition();
+                
+                // Check if we got a valid spawn position from /zspawnadd points
+                if (spawnPos == Vector3.zero)
+                {
+                    PrintWarning("[NecroZombies] No valid spawn points configured! Use /zspawnadd <setname> to add spawn points. Stopping wave.");
+                    _waveSpawnTimer?.Destroy();
+                    _waveSpawnTimer = null;
+                    return;
+                }
 
                 bool spawnedOk;
 
