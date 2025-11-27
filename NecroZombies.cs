@@ -342,7 +342,7 @@ namespace Oxide.Plugins
             _hopTimer = timer.Every(1f, HopTick);
             _hellhoundTimer = timer.Every(0.5f, HellhoundTick);
             _bruteTimer = timer.Every(0.3f, BruteTick);  // Check brute proximity every 0.3s
-            _zombieTargetTimer = timer.Every(1f, ZombieTargetTick);  // Keep zombies focused on players
+            _zombieTargetTimer = timer.Every(0.5f, ZombieTargetTick);  // Keep zombies focused on players - run frequently like hellhounds
         }
 
         private void Unload()
@@ -1160,33 +1160,65 @@ namespace Oxide.Plugins
                 if (_hellhoundsOnFire.Contains(entity))
                     continue;
                 
-                var npc = entity as NPCPlayer;
-                if (npc == null)
-                    continue;
-                
-                // Find nearest player on the map
-                var nearestPlayer = FindNearestPlayer(npc.transform.position, 500f);
+                // Find nearest player on the map - search 500m (whole map)
+                var nearestPlayer = FindNearestPlayer(entity.transform.position, 500f);
                 if (nearestPlayer == null)
                     continue;
                 
-                // Keep NavAgent moving toward player - NEVER stop
-                if (npc.NavAgent != null)
+                // Handle as NPCPlayer (scarecrow zombies)
+                var npc = entity as NPCPlayer;
+                if (npc != null)
                 {
-                    if (npc.NavAgent.isOnNavMesh)
+                    // Set attack target directly - this tells the AI who to attack
+                    npc.AttackTarget = nearestPlayer;
+                    npc.lastAttacker = nearestPlayer;
+                    npc.lastDealtDamageTime = Time.time;
+                    
+                    // Keep NavAgent moving toward player - NEVER stop
+                    if (npc.NavAgent != null)
                     {
-                        npc.NavAgent.SetDestination(nearestPlayer.transform.position);
-                        npc.NavAgent.isStopped = false;
-                    }
-                    else
-                    {
-                        // Try to warp to navmesh if not on it
-                        UnityEngine.AI.NavMeshHit hit;
-                        if (UnityEngine.AI.NavMesh.SamplePosition(npc.transform.position, out hit, 10f, -1))
+                        if (npc.NavAgent.isOnNavMesh)
                         {
-                            npc.NavAgent.Warp(hit.position);
                             npc.NavAgent.SetDestination(nearestPlayer.transform.position);
                             npc.NavAgent.isStopped = false;
+                            npc.NavAgent.speed = 6.5f;  // Ensure speed is set
                         }
+                        else
+                        {
+                            // Try to warp to navmesh if not on it
+                            UnityEngine.AI.NavMeshHit hit;
+                            if (UnityEngine.AI.NavMesh.SamplePosition(npc.transform.position, out hit, 10f, -1))
+                            {
+                                npc.NavAgent.Warp(hit.position);
+                                npc.NavAgent.SetDestination(nearestPlayer.transform.position);
+                                npc.NavAgent.isStopped = false;
+                            }
+                        }
+                    }
+                    
+                    // Force NPC to run toward target using brain/state
+                    if (npc.Brain != null)
+                    {
+                        npc.Brain.Navigator?.SetDestination(nearestPlayer.transform.position, BaseNavigator.NavigationSpeed.Fast);
+                    }
+                    
+                    continue;
+                }
+                
+                // Handle as BaseNpc (wolves or other animals)
+                var baseNpc = entity as BaseNpc;
+                if (baseNpc != null)
+                {
+                    // Force aggression facts
+                    baseNpc.SetFact(BaseNpc.Facts.IsAggro, 1);
+                    baseNpc.SetFact(BaseNpc.Facts.HasEnemy, 1);
+                    baseNpc.SetFact(BaseNpc.Facts.IsAfraid, 0);
+                    
+                    baseNpc.AttackTarget = nearestPlayer;
+                    
+                    if (baseNpc.NavAgent != null && baseNpc.NavAgent.isOnNavMesh)
+                    {
+                        baseNpc.NavAgent.SetDestination(nearestPlayer.transform.position);
                     }
                 }
             }
