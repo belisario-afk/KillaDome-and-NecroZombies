@@ -1169,8 +1169,7 @@ namespace Oxide.Plugins
                 var npc = entity as NPCPlayer;
                 if (npc != null)
                 {
-                    // Set attack target directly - this tells the AI who to attack
-                    npc.AttackTarget = nearestPlayer;
+                    // Set last attacker - this tells the AI who damaged us and triggers aggression
                     npc.lastAttacker = nearestPlayer;
                     npc.lastDealtDamageTime = Time.time;
                     
