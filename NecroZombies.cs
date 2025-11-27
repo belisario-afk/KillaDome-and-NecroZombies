@@ -327,6 +327,7 @@ namespace Oxide.Plugins
         private Timer _hellhoundTimer;
         private Timer _waveHudTimer;
         private Timer _bruteTimer;
+        private Timer _zombieTargetTimer;  // Keep zombies focused on players
 
         private bool _loggedTypeOnce;
 
@@ -341,6 +342,7 @@ namespace Oxide.Plugins
             _hopTimer = timer.Every(1f, HopTick);
             _hellhoundTimer = timer.Every(0.5f, HellhoundTick);
             _bruteTimer = timer.Every(0.3f, BruteTick);  // Check brute proximity every 0.3s
+            _zombieTargetTimer = timer.Every(1f, ZombieTargetTick);  // Keep zombies focused on players
         }
 
         private void Unload()
@@ -353,6 +355,9 @@ namespace Oxide.Plugins
             
             _bruteTimer?.Destroy();
             _bruteTimer = null;
+            
+            _zombieTargetTimer?.Destroy();
+            _zombieTargetTimer = null;
             
             _waveHudTimer?.Destroy();
             _waveHudTimer = null;
@@ -732,6 +737,29 @@ namespace Oxide.Plugins
 
                 if (!string.IsNullOrEmpty(profile.DisplayName))
                     npc.displayName = profile.DisplayName;
+                
+                // IMMEDIATE targeting - find nearest player and chase
+                var nearestPlayer = FindNearestPlayer(position, 500f);
+                if (nearestPlayer != null && npc.NavAgent != null)
+                {
+                    // Set destination to player
+                    if (npc.NavAgent.isOnNavMesh)
+                    {
+                        npc.NavAgent.SetDestination(nearestPlayer.transform.position);
+                        npc.NavAgent.isStopped = false;
+                    }
+                    else
+                    {
+                        // Try to warp to navmesh first
+                        UnityEngine.AI.NavMeshHit hit;
+                        if (UnityEngine.AI.NavMesh.SamplePosition(position, out hit, 10f, -1))
+                        {
+                            npc.NavAgent.Warp(hit.position);
+                            npc.NavAgent.SetDestination(nearestPlayer.transform.position);
+                            npc.NavAgent.isStopped = false;
+                        }
+                    }
+                }
             }
 
             return true;
@@ -1107,6 +1135,65 @@ namespace Oxide.Plugins
             foreach (var entity in toRemove)
             {
                 _hellhoundsOnFire.Remove(entity);
+            }
+        }
+        
+        /// <summary>
+        /// Keep ALL zombies (scarecrows) focused on nearest player - never lose target, never freeze
+        /// </summary>
+        private void ZombieTargetTick()
+        {
+            if (_activeZombies.Count == 0)
+                return;
+            
+            var toRemove = new List<BaseEntity>();
+            
+            foreach (var entity in _activeZombies)
+            {
+                if (entity == null || entity.IsDestroyed)
+                {
+                    toRemove.Add(entity);
+                    continue;
+                }
+                
+                // Skip hellhounds - they have their own tick
+                if (_hellhoundsOnFire.Contains(entity))
+                    continue;
+                
+                var npc = entity as NPCPlayer;
+                if (npc == null)
+                    continue;
+                
+                // Find nearest player on the map
+                var nearestPlayer = FindNearestPlayer(npc.transform.position, 500f);
+                if (nearestPlayer == null)
+                    continue;
+                
+                // Keep NavAgent moving toward player - NEVER stop
+                if (npc.NavAgent != null)
+                {
+                    if (npc.NavAgent.isOnNavMesh)
+                    {
+                        npc.NavAgent.SetDestination(nearestPlayer.transform.position);
+                        npc.NavAgent.isStopped = false;
+                    }
+                    else
+                    {
+                        // Try to warp to navmesh if not on it
+                        UnityEngine.AI.NavMeshHit hit;
+                        if (UnityEngine.AI.NavMesh.SamplePosition(npc.transform.position, out hit, 10f, -1))
+                        {
+                            npc.NavAgent.Warp(hit.position);
+                            npc.NavAgent.SetDestination(nearestPlayer.transform.position);
+                            npc.NavAgent.isStopped = false;
+                        }
+                    }
+                }
+            }
+            
+            foreach (var entity in toRemove)
+            {
+                _activeZombies.Remove(entity);
             }
         }
         
