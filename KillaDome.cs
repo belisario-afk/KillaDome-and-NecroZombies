@@ -955,8 +955,13 @@ namespace Oxide.Plugins
                 
                 if (mode == GameMode.Zombies)
                 {
-                    // Zombies mode: teleport to spectate position (handled by GameModeSystem)
-                    return null; // Let default respawn happen, then GameModeSystem will teleport
+                    // Zombies mode: spawn at spectate position
+                    if (_config.SpectatePosition != Vector3.zero)
+                    {
+                        spawnPoint.pos = _config.SpectatePosition;
+                        spawnPoint.rot = Quaternion.identity;
+                        return spawnPoint;
+                    }
                 }
                 else if (mode == GameMode.Normal)
                 {
