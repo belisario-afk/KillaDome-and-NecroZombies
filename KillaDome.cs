@@ -1075,6 +1075,59 @@ namespace Oxide.Plugins
             _gameModeSystem.OnZombiesWaveEnd();
         }
         
+        /// <summary>
+        /// Hook: PerkMachines requests price/currency info for a perk purchase.
+        /// Returns [price, currencyLabel] array to override default pricing.
+        /// </summary>
+        private object OnPerkPurchaseCost(BasePlayer player, string perkName, int defaultPrice, string defaultCurrency)
+        {
+            if (player == null || _tokenEconomy == null) return null;
+            
+            // Override price based on perk type (can be customized)
+            int price = perkName switch
+            {
+                "Juggernog" => 150,
+                "SpeedCola" => 100,
+                "DoubleTap" => 125,
+                "QuickRevive" => 100,
+                _ => defaultPrice
+            };
+            
+            LogDebug($"OnPerkPurchaseCost: {player.displayName} buying {perkName} for {price} Blood Tokens");
+            
+            // Return [price, currencyLabel]
+            return new object[] { price, "Blood Tokens" };
+        }
+        
+        /// <summary>
+        /// Hook: PerkMachines requests to charge player for perk purchase.
+        /// Returns true if charge succeeded, false if player cannot afford.
+        /// </summary>
+        private object OnPerkPurchaseCharge(BasePlayer player, string perkName, int price, string currencyLabel)
+        {
+            if (player == null || _tokenEconomy == null) return false;
+            
+            int balance = _tokenEconomy.GetBalance(player.userID);
+            
+            if (balance < price)
+            {
+                player.ChatMessage($"<color=#FF4444>Not enough Blood Tokens!</color> Need {price}, have {balance}");
+                LogDebug($"OnPerkPurchaseCharge: {player.displayName} cannot afford {perkName} ({balance}/{price})");
+                return false;
+            }
+            
+            // Deduct tokens
+            bool success = _tokenEconomy.SpendTokens(player.userID, price);
+            
+            if (success)
+            {
+                player.ChatMessage($"<color=#00FF00>Purchased {perkName} for {price} Blood Tokens!</color> Balance: {balance - price}");
+                LogDebug($"OnPerkPurchaseCharge: {player.displayName} bought {perkName} for {price} tokens");
+            }
+            
+            return success;
+        }
+        
         #endregion
         
         #region Helper Methods
