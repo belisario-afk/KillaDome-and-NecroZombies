@@ -1195,12 +1195,6 @@ namespace Oxide.Plugins
                         }
                     }
                     
-                    // Force NPC to run toward target using brain/state
-                    if (npc.Brain != null)
-                    {
-                        npc.Brain.Navigator?.SetDestination(nearestPlayer.transform.position, BaseNavigator.NavigationSpeed.Fast);
-                    }
-                    
                     continue;
                 }
                 
