@@ -755,8 +755,12 @@ namespace Oxide.Plugins
                         if (UnityEngine.AI.NavMesh.SamplePosition(position, out hit, 10f, -1))
                         {
                             npc.NavAgent.Warp(hit.position);
-                            npc.NavAgent.SetDestination(nearestPlayer.transform.position);
-                            npc.NavAgent.isStopped = false;
+                            // Only set destination if warp succeeded and we're on navmesh
+                            if (npc.NavAgent.isOnNavMesh)
+                            {
+                                npc.NavAgent.SetDestination(nearestPlayer.transform.position);
+                                npc.NavAgent.isStopped = false;
+                            }
                         }
                     }
                 }
@@ -1124,7 +1128,11 @@ namespace Oxide.Plugins
                                 if (UnityEngine.AI.NavMesh.SamplePosition(wolf.transform.position, out hit, 10f, -1))
                                 {
                                     wolf.NavAgent.Warp(hit.position);
-                                    wolf.NavAgent.SetDestination(nearestPlayer.transform.position);
+                                    // Only set destination if warp succeeded
+                                    if (wolf.NavAgent.isOnNavMesh)
+                                    {
+                                        wolf.NavAgent.SetDestination(nearestPlayer.transform.position);
+                                    }
                                 }
                             }
                         }
@@ -1189,8 +1197,12 @@ namespace Oxide.Plugins
                             if (UnityEngine.AI.NavMesh.SamplePosition(npc.transform.position, out hit, 10f, -1))
                             {
                                 npc.NavAgent.Warp(hit.position);
-                                npc.NavAgent.SetDestination(nearestPlayer.transform.position);
-                                npc.NavAgent.isStopped = false;
+                                // Only set destination if warp succeeded
+                                if (npc.NavAgent.isOnNavMesh)
+                                {
+                                    npc.NavAgent.SetDestination(nearestPlayer.transform.position);
+                                    npc.NavAgent.isStopped = false;
+                                }
                             }
                         }
                     }
