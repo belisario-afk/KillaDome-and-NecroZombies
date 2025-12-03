@@ -1055,17 +1055,87 @@ namespace Oxide.Plugins
             var zombieAttacker = info.InitiatorPlayer;
             if (zombieAttacker != null && zombieAttacker.IsConnected && _config.EnableZombiesMode)
             {
-                // Award tokens for zombie kill
-                _tokenEconomy.AwardTokens(zombieAttacker.userID, _config.TokensPerZombieKill);
+                int tokensAwarded = _config.TokensPerZombieKill;
                 
-                // Track telemetry
+                // Award tokens for zombie kill
+                _tokenEconomy.AwardTokens(zombieAttacker.userID, tokensAwarded);
+                
+                // Track all stats
                 var session = GetSession(zombieAttacker.userID);
                 if (session != null)
                 {
                     session.Profile.TotalKills++;
+                    session.Profile.ZombieKills++;
+                    session.Profile.CurrentMatchKills++;
+                    session.Profile.CurrentMatchTokens += tokensAwarded;
+                    session.Profile.TotalTokensEarned += tokensAwarded;
+                    session.Profile.DisplayName = zombieAttacker.displayName;
+                    
+                    // Update HUD with kill count
+                    UpdateZombieKillHUD(zombieAttacker, session);
                 }
                 
-                LogDebug($"{zombieAttacker.displayName} killed a zombie (+{_config.TokensPerZombieKill} tokens)");
+                LogDebug($"{zombieAttacker.displayName} killed a zombie (+{tokensAwarded} tokens)");
+            }
+        }
+        
+        /// <summary>
+        /// Update the zombie kill counter HUD for a player
+        /// </summary>
+        private void UpdateZombieKillHUD(BasePlayer player, PlayerSession session)
+        {
+            if (player == null || session == null) return;
+            
+            // Destroy existing HUD
+            CuiHelper.DestroyUi(player, "ZombieKillHUD");
+            
+            // Create kill counter HUD (bottom-center)
+            var container = new CuiElementContainer();
+            
+            // Main HUD panel
+            container.Add(new CuiPanel
+            {
+                Image = { Color = "0.05 0.05 0.1 0.85" },
+                RectTransform = { AnchorMin = "0.43 0.02", AnchorMax = "0.57 0.10" }
+            }, "Overlay", "ZombieKillHUD");
+            
+            // Kill icon + count
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "💀", FontSize = 22, Align = TextAnchor.MiddleLeft, Color = "1 0.3 0.3 1" },
+                RectTransform = { AnchorMin = "0.08 0.5", AnchorMax = "0.35 0.95" }
+            }, "ZombieKillHUD");
+            
+            container.Add(new CuiLabel
+            {
+                Text = { Text = $"{session.Profile.CurrentMatchKills}", FontSize = 24, Align = TextAnchor.MiddleRight, Color = "1 1 1 1" },
+                RectTransform = { AnchorMin = "0.35 0.5", AnchorMax = "0.92 0.95" }
+            }, "ZombieKillHUD");
+            
+            // Token counter
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "🩸", FontSize = 14, Align = TextAnchor.MiddleLeft, Color = "0.8 0.2 0.2 1" },
+                RectTransform = { AnchorMin = "0.08 0.05", AnchorMax = "0.35 0.45" }
+            }, "ZombieKillHUD");
+            
+            container.Add(new CuiLabel
+            {
+                Text = { Text = $"+{session.Profile.CurrentMatchTokens}", FontSize = 14, Align = TextAnchor.MiddleRight, Color = "0.6 1 0.6 1" },
+                RectTransform = { AnchorMin = "0.35 0.05", AnchorMax = "0.92 0.45" }
+            }, "ZombieKillHUD");
+            
+            CuiHelper.AddUi(player, container);
+        }
+        
+        /// <summary>
+        /// Remove the zombie kill HUD from player
+        /// </summary>
+        private void RemoveZombieKillHUD(BasePlayer player)
+        {
+            if (player != null)
+            {
+                CuiHelper.DestroyUi(player, "ZombieKillHUD");
             }
         }
         
@@ -1076,6 +1146,20 @@ namespace Oxide.Plugins
         {
             LogDebug($"NecroZombies wave {waveNumber} complete - respawning spectators");
             _gameModeSystem.OnZombiesWaveEnd();
+            
+            // Update highest wave for all players in zombies mode
+            foreach (var kvp in _activeSessions)
+            {
+                var session = kvp.Value;
+                if (session.SelectedGameMode == GameMode.Zombies)
+                {
+                    if (waveNumber > session.Profile.HighestWave)
+                    {
+                        session.Profile.HighestWave = waveNumber;
+                        LogDebug($"Player {kvp.Key} reached new highest wave: {waveNumber}");
+                    }
+                }
+            }
         }
         
         /// <summary>
@@ -1951,6 +2035,14 @@ namespace Oxide.Plugins
             var player = arg.Player();
             if (player == null) return;
             _lobbyUI.DestroyUI(player);
+        }
+        
+        [ConsoleCommand("matchstats.close")]
+        private void CmdMatchStatsClose(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            CuiHelper.DestroyUi(player, "MatchEndStats");
         }
         
         [ConsoleCommand("killadome.tab")]
@@ -2867,6 +2959,14 @@ namespace Oxide.Plugins
             public int TotalDeaths { get; set; }
             public int MatchesPlayed { get; set; }
             public DateTime LastDailyRefill { get; set; }
+            
+            // ===== NEW STATS FOR ZOMBIES MODE =====
+            public int ZombieKills { get; set; }           // Total zombie kills across all matches
+            public int HighestWave { get; set; }           // Highest wave reached (for leaderboard)
+            public int TotalTokensEarned { get; set; }     // Lifetime tokens earned
+            public int CurrentMatchKills { get; set; }     // Kills in current match (reset each match)
+            public int CurrentMatchTokens { get; set; }    // Tokens earned in current match
+            public string DisplayName { get; set; }        // Player display name for leaderboards
             
             public PlayerProfile()
             {
@@ -5016,16 +5116,22 @@ namespace Oxide.Plugins
                 
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = "━━━ YOUR STATS ━━━", FontSize = 26, Align = TextAnchor.MiddleCenter, Color = "1 0.85 0.4 1" },
+                    Text = { Text = "━━━ YOUR STATS & LEADERBOARD ━━━", FontSize = 26, Align = TextAnchor.MiddleCenter, Color = "1 0.85 0.4 1" },
                     RectTransform = { AnchorMin = "0 0.1", AnchorMax = "1 1" }
                 }, "StatsHeader");
                 
-                // Main stats container
+                // LEFT SIDE - Your Stats
                 container.Add(new CuiPanel
                 {
                     Image = { Color = "0.04 0.04 0.06 0.9" },
-                    RectTransform = { AnchorMin = "0.15 0.10", AnchorMax = "0.85 0.85" }
+                    RectTransform = { AnchorMin = "0.02 0.10", AnchorMax = "0.48 0.85" }
                 }, UI_TAB_CONTAINER, "StatsContent");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "📊 YOUR STATS", FontSize = 18, Align = TextAnchor.MiddleCenter, Color = "1 0.8 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.90", AnchorMax = "1 0.98" }
+                }, "StatsContent");
                 
                 var session = _plugin.GetSession(player.userID);
                 if (session != null)
@@ -5033,23 +5139,25 @@ namespace Oxide.Plugins
                     var profile = session.Profile;
                     float kd = profile.TotalDeaths > 0 ? (float)profile.TotalKills / profile.TotalDeaths : profile.TotalKills;
                     
-                    // Stats grid - larger cards
+                    // Stats grid - 2 columns, 4 rows
                     var statsData = new[] {
-                        new { Label = "KILLS", Value = profile.TotalKills.ToString(), Color = "0.3 0.8 0.4" },
-                        new { Label = "DEATHS", Value = profile.TotalDeaths.ToString(), Color = "0.8 0.3 0.3" },
-                        new { Label = "K/D RATIO", Value = kd.ToString("F2"), Color = "0.4 0.7 1.0" },
-                        new { Label = "BLOOD TOKENS", Value = profile.Tokens.ToString(), Color = "1.0 0.7 0.2" },
-                        new { Label = "MATCHES PLAYED", Value = profile.MatchesPlayed.ToString(), Color = "0.7 0.5 1.0" },
-                        new { Label = "VIP STATUS", Value = profile.IsVIP ? "ACTIVE" : "INACTIVE", Color = profile.IsVIP ? "0.3 1.0 0.5" : "0.5 0.5 0.5" }
+                        new { Label = "💀 ZOMBIE KILLS", Value = profile.ZombieKills.ToString(), Color = "0.8 0.3 0.3" },
+                        new { Label = "🏆 HIGHEST WAVE", Value = profile.HighestWave.ToString(), Color = "0.3 0.8 1.0" },
+                        new { Label = "💰 BLOOD TOKENS", Value = profile.Tokens.ToString(), Color = "1.0 0.7 0.2" },
+                        new { Label = "📈 TOTAL EARNED", Value = profile.TotalTokensEarned.ToString(), Color = "0.3 1.0 0.5" },
+                        new { Label = "⚔️ TOTAL KILLS", Value = profile.TotalKills.ToString(), Color = "0.3 0.8 0.4" },
+                        new { Label = "💀 DEATHS", Value = profile.TotalDeaths.ToString(), Color = "0.8 0.3 0.3" },
+                        new { Label = "📊 K/D RATIO", Value = kd.ToString("F2"), Color = "0.4 0.7 1.0" },
+                        new { Label = "🎮 MATCHES", Value = profile.MatchesPlayed.ToString(), Color = "0.7 0.5 1.0" }
                     };
                     
-                    int cols = 3;
-                    float cardWidth = 0.30f;
-                    float cardHeight = 0.35f;
-                    float spacingX = 0.025f;
-                    float spacingY = 0.05f;
-                    float startX = 0.03f;
-                    float startY = 0.90f;
+                    int cols = 2;
+                    float cardWidth = 0.45f;
+                    float cardHeight = 0.18f;
+                    float spacingX = 0.04f;
+                    float spacingY = 0.025f;
+                    float startX = 0.025f;
+                    float startY = 0.85f;
                     
                     for (int i = 0; i < statsData.Length; i++)
                     {
@@ -5069,25 +5177,18 @@ namespace Oxide.Plugins
                             RectTransform = { AnchorMin = $"{xMin} {yMin}", AnchorMax = $"{xMax} {yMax}" }
                         }, "StatsContent", cardName);
                         
-                        // Top accent
-                        container.Add(new CuiPanel
-                        {
-                            Image = { Color = $"{statsData[i].Color} 0.8" },
-                            RectTransform = { AnchorMin = "0 0.95", AnchorMax = "1 1" }
-                        }, cardName);
-                        
                         // Label
                         container.Add(new CuiLabel
                         {
-                            Text = { Text = statsData[i].Label, FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
-                            RectTransform = { AnchorMin = "0 0.60", AnchorMax = "1 0.85" }
+                            Text = { Text = statsData[i].Label, FontSize = 11, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                            RectTransform = { AnchorMin = "0 0.55", AnchorMax = "1 0.95" }
                         }, cardName);
                         
                         // Value
                         container.Add(new CuiLabel
                         {
-                            Text = { Text = statsData[i].Value, FontSize = 28, Align = TextAnchor.MiddleCenter, Color = $"{statsData[i].Color} 1" },
-                            RectTransform = { AnchorMin = "0 0.15", AnchorMax = "1 0.60" }
+                            Text = { Text = statsData[i].Value, FontSize = 20, Align = TextAnchor.MiddleCenter, Color = $"{statsData[i].Color} 1" },
+                            RectTransform = { AnchorMin = "0 0.05", AnchorMax = "1 0.55" }
                         }, cardName);
                     }
                 }
@@ -5100,6 +5201,111 @@ namespace Oxide.Plugins
                     }, "StatsContent");
                 }
                 
+                // RIGHT SIDE - Leaderboard
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.04 0.04 0.06 0.9" },
+                    RectTransform = { AnchorMin = "0.52 0.10", AnchorMax = "0.98 0.85" }
+                }, UI_TAB_CONTAINER, "LeaderboardContent");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "🏆 TOP PLAYERS - HIGHEST WAVE", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 0.8 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.90", AnchorMax = "1 0.98" }
+                }, "LeaderboardContent");
+                
+                // Load and display leaderboard
+                var leaderboard = GetWaveLeaderboard(10);
+                float rowHeight = 0.075f;
+                float startRowY = 0.85f;
+                
+                // Header row
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.1 0.1 0.15 0.8" },
+                    RectTransform = { AnchorMin = $"0.02 {startRowY}", AnchorMax = $"0.98 {startRowY + rowHeight}" }
+                }, "LeaderboardContent", "LBHeader");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "#", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0 0", AnchorMax = "0.12 1" }
+                }, "LBHeader");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "PLAYER", FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.15 0", AnchorMax = "0.60 1" }
+                }, "LBHeader");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "WAVE", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.60 0", AnchorMax = "0.78 1" }
+                }, "LBHeader");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "KILLS", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.78 0", AnchorMax = "0.98 1" }
+                }, "LBHeader");
+                
+                for (int i = 0; i < leaderboard.Count; i++)
+                {
+                    var entry = leaderboard[i];
+                    float yPos = startRowY - ((i + 1) * (rowHeight + 0.005f));
+                    
+                    string rowColor = entry.SteamID == player.userID ? "0.15 0.25 0.15 0.9" : "0.06 0.06 0.08 0.8";
+                    string rankColor = i == 0 ? "1 0.85 0 1" : i == 1 ? "0.8 0.8 0.9 1" : i == 2 ? "0.8 0.5 0.2 1" : "1 1 1 0.8";
+                    
+                    string rowName = $"LBRow_{i}";
+                    container.Add(new CuiPanel
+                    {
+                        Image = { Color = rowColor },
+                        RectTransform = { AnchorMin = $"0.02 {yPos}", AnchorMax = $"0.98 {yPos + rowHeight}" }
+                    }, "LeaderboardContent", rowName);
+                    
+                    // Rank
+                    string rankText = i == 0 ? "🥇" : i == 1 ? "🥈" : i == 2 ? "🥉" : $"#{i + 1}";
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = rankText, FontSize = 14, Align = TextAnchor.MiddleCenter, Color = rankColor },
+                        RectTransform = { AnchorMin = "0 0", AnchorMax = "0.12 1" }
+                    }, rowName);
+                    
+                    // Name
+                    string displayName = entry.DisplayName ?? $"Player {entry.SteamID}";
+                    if (displayName.Length > 14) displayName = displayName.Substring(0, 14) + "...";
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = displayName, FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "1 1 1 0.9" },
+                        RectTransform = { AnchorMin = "0.15 0", AnchorMax = "0.60 1" }
+                    }, rowName);
+                    
+                    // Wave
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = entry.HighestWave.ToString(), FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.3 0.8 1 1" },
+                        RectTransform = { AnchorMin = "0.60 0", AnchorMax = "0.78 1" }
+                    }, rowName);
+                    
+                    // Kills
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = entry.ZombieKills.ToString(), FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.8 0.3 0.3 1" },
+                        RectTransform = { AnchorMin = "0.78 0", AnchorMax = "0.98 1" }
+                    }, rowName);
+                }
+                
+                if (leaderboard.Count == 0)
+                {
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = "No leaderboard data yet.\nPlay zombies mode to get on the board!", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.6 0.6 0.6 1" },
+                        RectTransform = { AnchorMin = "0.05 0.35", AnchorMax = "0.95 0.60" }
+                    }, "LeaderboardContent");
+                }
+                
                 // Footer
                 container.Add(new CuiPanel
                 {
@@ -5109,9 +5315,82 @@ namespace Oxide.Plugins
                 
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = "📊 Stats are updated in real-time as you play", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.8 0.9 1" },
+                    Text = { Text = "📊 Stats and tokens are saved automatically • Kill zombies to climb the leaderboard!", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.8 0.9 1" },
                     RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" }
                 }, "StatsFooter");
+            }
+            
+            /// <summary>
+            /// Helper class for leaderboard entries
+            /// </summary>
+            private class LeaderboardEntry
+            {
+                public ulong SteamID { get; set; }
+                public string DisplayName { get; set; }
+                public int HighestWave { get; set; }
+                public int ZombieKills { get; set; }
+            }
+            
+            /// <summary>
+            /// Get the wave leaderboard from all player profiles
+            /// </summary>
+            private List<LeaderboardEntry> GetWaveLeaderboard(int count)
+            {
+                var entries = new List<LeaderboardEntry>();
+                
+                // Get all active sessions first
+                foreach (var kvp in _plugin._activeSessions)
+                {
+                    var profile = kvp.Value.Profile;
+                    if (profile.HighestWave > 0 || profile.ZombieKills > 0)
+                    {
+                        entries.Add(new LeaderboardEntry
+                        {
+                            SteamID = profile.SteamID,
+                            DisplayName = profile.DisplayName ?? "Unknown",
+                            HighestWave = profile.HighestWave,
+                            ZombieKills = profile.ZombieKills
+                        });
+                    }
+                }
+                
+                // Load additional profiles from saved data
+                string dataDir = Path.Combine(Interface.Oxide.DataDirectory, "KillaDome");
+                if (Directory.Exists(dataDir))
+                {
+                    foreach (string file in Directory.GetFiles(dataDir, "*.json"))
+                    {
+                        try
+                        {
+                            string fileName = Path.GetFileNameWithoutExtension(file);
+                            if (!ulong.TryParse(fileName, out ulong steamId)) continue;
+                            
+                            // Skip if already in active sessions
+                            if (entries.Any(e => e.SteamID == steamId)) continue;
+                            
+                            string json = File.ReadAllText(file);
+                            var profile = JsonConvert.DeserializeObject<PlayerProfile>(json);
+                            if (profile != null && (profile.HighestWave > 0 || profile.ZombieKills > 0))
+                            {
+                                entries.Add(new LeaderboardEntry
+                                {
+                                    SteamID = profile.SteamID,
+                                    DisplayName = profile.DisplayName ?? "Unknown",
+                                    HighestWave = profile.HighestWave,
+                                    ZombieKills = profile.ZombieKills
+                                });
+                            }
+                        }
+                        catch { /* Skip invalid files */ }
+                    }
+                }
+                
+                // Sort by highest wave, then by zombie kills
+                return entries
+                    .OrderByDescending(e => e.HighestWave)
+                    .ThenByDescending(e => e.ZombieKills)
+                    .Take(count)
+                    .ToList();
             }
             
             private void ShowSettingsTab(CuiElementContainer container, BasePlayer player)
@@ -6733,7 +7012,7 @@ namespace Oxide.Plugins
                 _plugin._zombieIntegration.StopWaveMode();
                 _plugin._zombieIntegration.KillAllZombies();
                 
-                // Return all players to lobby
+                // Return all players to lobby and show match stats
                 foreach (ulong steamId in _zombiesQueue.ToList())
                 {
                     var player = BasePlayer.FindByID(steamId);
@@ -6742,16 +7021,26 @@ namespace Oxide.Plugins
                     var session = _plugin.GetSession(steamId);
                     if (session == null) continue;
                     
+                    // Show match stats summary
+                    ShowMatchEndStats(player, session);
+                    
+                    // Save profile (persistent tokens)
+                    _plugin._saveManager.SavePlayerProfile(session.Profile);
+                    
                     session.IsInMatch = false;
                     session.IsSpectating = false;
                     session.SelectedGameMode = GameMode.None;
                     session.CanLeaveMatch = true;
                     
-                    // Hide lobby UI
+                    // Reset current match stats for next match
+                    session.Profile.CurrentMatchKills = 0;
+                    session.Profile.CurrentMatchTokens = 0;
+                    
+                    // Hide HUD and lobby UI
+                    _plugin.RemoveZombieKillHUD(player);
                     HideZombiesLobbyUI(player);
                     
                     _plugin.TeleportToLobby(player);
-                    _plugin.SendReply(player, "<color=#FF8800>Match ended! Returned to lobby.</color>");
                 }
                 
                 _zombiesQueue.Clear();
@@ -6763,6 +7052,71 @@ namespace Oxide.Plugins
                 _hostUITimer = null;
                 
                 _plugin.Puts("Zombies match ended!");
+            }
+            
+            /// <summary>
+            /// Show match end stats summary to player
+            /// </summary>
+            private void ShowMatchEndStats(BasePlayer player, PlayerSession session)
+            {
+                if (player == null || session == null) return;
+                
+                // Create match stats summary UI
+                CuiHelper.DestroyUi(player, "MatchEndStats");
+                var container = new CuiElementContainer();
+                
+                // Background panel
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.05 0.05 0.1 0.95" },
+                    RectTransform = { AnchorMin = "0.30 0.25", AnchorMax = "0.70 0.75" }
+                }, "Overlay", "MatchEndStats");
+                
+                // Title
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "━━━ MATCH COMPLETE ━━━", FontSize = 26, Align = TextAnchor.MiddleCenter, Color = "1 0.7 0.2 1" },
+                    RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
+                }, "MatchEndStats");
+                
+                // Stats
+                int kills = session.Profile.CurrentMatchKills;
+                int tokens = session.Profile.CurrentMatchTokens;
+                int highWave = session.Profile.HighestWave;
+                int totalZombieKills = session.Profile.ZombieKills;
+                int totalTokens = session.Profile.Tokens;
+                
+                string statsText = $"<color=#FF6666>💀 KILLS THIS MATCH:</color>  <color=#FFFFFF>{kills}</color>\n\n" +
+                                   $"<color=#66FF66>🩸 TOKENS EARNED:</color>  <color=#FFFFFF>+{tokens}</color>\n\n" +
+                                   $"<color=#6666FF>🏆 HIGHEST WAVE:</color>  <color=#FFFFFF>{highWave}</color>\n\n" +
+                                   $"<color=#AAAAAA>━━━━━━━━━━━━━━━━━━━━━━</color>\n\n" +
+                                   $"<color=#FF9933>📊 TOTAL ZOMBIE KILLS:</color>  <color=#FFFFFF>{totalZombieKills}</color>\n\n" +
+                                   $"<color=#33FF99>💰 TOTAL TOKENS:</color>  <color=#FFFFFF>{totalTokens}</color>";
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = statsText, FontSize = 18, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
+                    RectTransform = { AnchorMin = "0.05 0.15", AnchorMax = "0.95 0.82" }
+                }, "MatchEndStats");
+                
+                // Close button
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.3 0.6 0.3 0.8", Command = "matchstats.close" },
+                    Text = { Text = "CONTINUE", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
+                    RectTransform = { AnchorMin = "0.35 0.03", AnchorMax = "0.65 0.12" }
+                }, "MatchEndStats");
+                
+                CuiHelper.AddUi(player, container);
+                
+                // Auto-close after 10 seconds
+                _plugin.timer.Once(10f, () =>
+                {
+                    if (player != null && player.IsConnected)
+                    {
+                        CuiHelper.DestroyUi(player, "MatchEndStats");
+                    }
+                });
             }
             
             /// <summary>
