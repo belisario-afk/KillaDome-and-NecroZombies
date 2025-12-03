@@ -3,8 +3,9 @@
 // - Stores Euler rotations (Vector3) to avoid Quaternion JSON self-reference
 // - Live editor with keybind nudges, save/cancel, spawn/remove, preview
 // - Default prefab: assets/prefabs/weapons/ak47u/ak47u.entity.prefab
+// - Integrated with KillaDome Blood Tokens economy
 //
-// Author: Vic (fixed version)
+// Author: Vic (fixed version), integrated by Copilot
 
 using System;
 using System.Collections.Generic;
@@ -14,10 +15,17 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("WallBuyAdvanced", "Vic", "1.1.1")]
-    [Description("Wall-Buy system with live editor (D-pad / keys) for Rust - Fixed serialization")]
+    [Info("WallBuyAdvanced", "Vic", "1.2.0")]
+    [Description("Wall-Buy system with live editor and KillaDome Blood Token integration")]
     public class WallBuyAdvanced : RustPlugin
     {
+        #region Plugin References
+        
+        [PluginReference]
+        private Plugin KillaDome;
+        
+        #endregion
+        
         #region Data structures
 
         private class WallPoint
@@ -431,6 +439,41 @@ namespace Oxide.Plugins
                 return;
             }
 
+            // Use KillaDome Blood Token economy if available
+            if (KillaDome != null)
+            {
+                // Get cost from KillaDome hook (may override default)
+                object costResult = KillaDome.Call("OnWallBuyCost", player, p.Shortname, p.Cost);
+                int actualCost = costResult is int ? (int)costResult : p.Cost;
+                
+                // Try to charge via KillaDome hook
+                object chargeResult = KillaDome.Call("OnWallBuyCharge", player, p.Shortname, actualCost);
+                bool charged = chargeResult is bool ? (bool)chargeResult : false;
+                
+                if (!charged)
+                {
+                    // KillaDome handles the error message
+                    return;
+                }
+                
+                // Give the item
+                var item = ItemManager.Create(def, p.Amount);
+                if (item == null)
+                {
+                    player.ChatMessage("Failed to create item!");
+                    return;
+                }
+
+                if (!player.inventory.GiveItem(item))
+                {
+                    item.Drop(player.transform.position + Vector3.up, Vector3.zero);
+                    player.ChatMessage("Inventory full — item dropped at your feet.");
+                }
+                
+                return;
+            }
+            
+            // Fallback to scrap if KillaDome not loaded
             var scrap = ItemManager.FindItemDefinition("scrap");
             if (scrap == null)
             {
@@ -448,17 +491,17 @@ namespace Oxide.Plugins
 
             player.inventory.Take(null, scrapId, p.Cost);
 
-            var item = ItemManager.Create(def, p.Amount);
-            if (item == null)
+            var fallbackItem = ItemManager.Create(def, p.Amount);
+            if (fallbackItem == null)
             {
                 player.ChatMessage("Failed to create item; refunding scrap.");
                 player.inventory.GiveItem(ItemManager.CreateByName("scrap", p.Cost));
                 return;
             }
 
-            if (!player.inventory.GiveItem(item))
+            if (!player.inventory.GiveItem(fallbackItem))
             {
-                item.Drop(player.transform.position + Vector3.up, Vector3.zero);
+                fallbackItem.Drop(player.transform.position + Vector3.up, Vector3.zero);
                 player.ChatMessage("Inventory full — item dropped at your feet.");
             }
             else

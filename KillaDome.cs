@@ -1174,6 +1174,57 @@ namespace Oxide.Plugins
             return success;
         }
         
+        /// <summary>
+        /// Hook: WallBuyAdvanced requests cost for a wall-buy weapon.
+        /// Returns the Blood Token cost (uses the cost configured in wall-buy point).
+        /// </summary>
+        private object OnWallBuyCost(BasePlayer player, string itemShortname, int defaultCost)
+        {
+            if (player == null) return defaultCost;
+            
+            // Use the configured cost from wall-buy, but convert to Blood Tokens
+            LogDebug($"OnWallBuyCost: {player.displayName} checking wall-buy {itemShortname} cost: {defaultCost}");
+            return defaultCost;
+        }
+        
+        /// <summary>
+        /// Hook: WallBuyAdvanced requests to charge player for purchasing a wall-buy weapon.
+        /// Returns true if charge succeeded, false if player cannot afford.
+        /// </summary>
+        private object OnWallBuyCharge(BasePlayer player, string itemShortname, int cost)
+        {
+            if (player == null || _tokenEconomy == null) return false;
+            
+            int balance = _tokenEconomy.GetBalance(player.userID);
+            
+            if (balance < cost)
+            {
+                player.ChatMessage($"<color=#FF4444>Not enough Blood Tokens!</color> Need {cost}, have {balance}");
+                LogDebug($"OnWallBuyCharge: {player.displayName} cannot afford {itemShortname} ({balance}/{cost})");
+                return false;
+            }
+            
+            // Deduct tokens
+            bool success = _tokenEconomy.SpendTokens(player.userID, cost);
+            
+            if (success)
+            {
+                player.ChatMessage($"<color=#00FF00>Purchased {itemShortname} for {cost} Blood Tokens!</color> Balance: {balance - cost}");
+                LogDebug($"OnWallBuyCharge: {player.displayName} bought {itemShortname} for {cost} tokens");
+            }
+            
+            return success;
+        }
+        
+        /// <summary>
+        /// Hook: WallBuyAdvanced requests player's current Blood Token balance for UI display.
+        /// </summary>
+        private object OnWallBuyGetBalance(BasePlayer player)
+        {
+            if (player == null || _tokenEconomy == null) return 0;
+            return _tokenEconomy.GetBalance(player.userID);
+        }
+        
         #endregion
         
         #region Helper Methods
