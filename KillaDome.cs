@@ -27,8 +27,8 @@ using System.IO;
 
 namespace Oxide.Plugins
 {
-    [Info("KillaDome", "KillaDome", "1.3.0")]
-    [Description("Full COD-style server experience with lobby, loadouts, progression, and Black Ops zombies integration via NecroZombies")]
+    [Info("KillaDome", "KillaDome", "1.6.0")]
+    [Description("Full COD-style server experience with lobby, loadouts, progression, Black Ops zombies integration, host system, and leave/rejoin")]
     public class KillaDome : RustPlugin
     {
         #region Fields
@@ -931,6 +931,9 @@ namespace Oxide.Plugins
             
             _lobbyUI?.DestroyUI(player);
             
+            // Notify game mode system about disconnect (for host transfer, etc.)
+            _gameModeSystem?.OnPlayerDisconnected(player.userID);
+            
             if (_activeSessions.TryGetValue(player.userID, out var session))
             {
                 _saveManager?.SavePlayerProfile(session.Profile);
@@ -1608,6 +1611,7 @@ namespace Oxide.Plugins
                     "/kd open - Open lobby UI\n" +
                     "/kd stats - View your stats\n" +
                     "/kd mode - Check current game mode\n" +
+                    "/kd leave - Leave current match\n" +
                     "/kd help - Show this help");
                 return;
             }
@@ -1625,6 +1629,10 @@ namespace Oxide.Plugins
                         SendReply(player, $"Blood Tokens: {session.Profile.Tokens}\n" +
                             $"VIP Status: {(session.Profile.IsVIP ? "Active" : "Inactive")}");
                     }
+                    break;
+                
+                case "leave":
+                    _gameModeSystem.PlayerLeave(player);
                     break;
                     
                 case "mode":
@@ -1857,6 +1865,33 @@ namespace Oxide.Plugins
             if (player == null) return;
             
             _gameModeSystem.CloseConfirmationUI(player);
+        }
+        
+        [ConsoleCommand("kd.host.forcestart")]
+        private void CmdHostForceStart(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            
+            _gameModeSystem.HostForceStart(player);
+        }
+        
+        [ConsoleCommand("kd.host.endmatch")]
+        private void CmdHostEndMatch(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            
+            _gameModeSystem.HostEndMatch(player);
+        }
+        
+        [ConsoleCommand("kd.leave")]
+        private void CmdLeaveMatch(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            
+            _gameModeSystem.PlayerLeave(player);
         }
         
         [ConsoleCommand("killadome.close")]
@@ -5682,6 +5717,7 @@ namespace Oxide.Plugins
         /// <summary>
         /// Manages teleporter-based game mode selection.
         /// Players step into teleporters to join Zombies or Normal mode.
+        /// Features: Host system, minimum player requirements, leave/rejoin
         /// </summary>
         internal class GameModeSystem
         {
@@ -5699,6 +5735,16 @@ namespace Oxide.Plugins
             // Active game states
             private bool _zombiesMatchActive = false;
             private bool _normalMatchActive = false;
+            
+            // Zombies lobby waiting state (before match starts)
+            private bool _zombiesLobbyWaiting = false;
+            
+            // Host system
+            private ulong _zombiesHostId = 0;
+            private const int MIN_PLAYERS_TO_START = 4;
+            
+            // Host UI timer
+            private Timer _hostUITimer;
             
             // Teleporter sphere entities
             private List<BaseEntity> _teleporterTiles = new List<BaseEntity>();
@@ -5844,8 +5890,13 @@ namespace Oxide.Plugins
                 string modeColor = mode == GameMode.Zombies ? "#FF4444" : "#44FF44";
                 string modeName = mode == GameMode.Zombies ? "ZOMBIES MODE" : "NORMAL MODE";
                 string modeDesc = mode == GameMode.Zombies 
-                    ? "Fight waves of undead. Respawn next wave."
+                    ? $"Fight waves of undead. Need {MIN_PLAYERS_TO_START} players to start."
                     : "Classic PvP deathmatch.";
+                
+                int currentPlayers = mode == GameMode.Zombies ? _zombiesQueue.Count : _normalQueue.Count;
+                string playerCountInfo = mode == GameMode.Zombies 
+                    ? $"<color=#00FFFF>Players in lobby: {currentPlayers}/{MIN_PLAYERS_TO_START}</color>"
+                    : "";
                 
                 var elements = new CuiElementContainer();
                 
@@ -5855,7 +5906,7 @@ namespace Oxide.Plugins
                 elements.Add(new CuiPanel
                 {
                     Image = { Color = "0 0 0 0.85" },
-                    RectTransform = { AnchorMin = "0.3 0.35", AnchorMax = "0.7 0.65" },
+                    RectTransform = { AnchorMin = "0.3 0.30", AnchorMax = "0.7 0.70" },
                     CursorEnabled = true
                 }, "Overlay", panelName);
                 
@@ -5863,21 +5914,31 @@ namespace Oxide.Plugins
                 elements.Add(new CuiLabel
                 {
                     Text = { Text = $"<color={modeColor}>JOIN {modeName}?</color>", FontSize = 24, Align = TextAnchor.MiddleCenter },
-                    RectTransform = { AnchorMin = "0 0.7", AnchorMax = "1 0.95" }
+                    RectTransform = { AnchorMin = "0 0.80", AnchorMax = "1 0.95" }
                 }, panelName);
                 
                 // Description
                 elements.Add(new CuiLabel
                 {
                     Text = { Text = modeDesc, FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.8 0.8 0.8 1" },
-                    RectTransform = { AnchorMin = "0 0.45", AnchorMax = "1 0.65" }
+                    RectTransform = { AnchorMin = "0 0.65", AnchorMax = "1 0.78" }
                 }, panelName);
                 
-                // Warning
+                // Player count (for zombies)
+                if (!string.IsNullOrEmpty(playerCountInfo))
+                {
+                    elements.Add(new CuiLabel
+                    {
+                        Text = { Text = playerCountInfo, FontSize = 16, Align = TextAnchor.MiddleCenter },
+                        RectTransform = { AnchorMin = "0 0.50", AnchorMax = "1 0.63" }
+                    }, panelName);
+                }
+                
+                // Info about leaving
                 elements.Add(new CuiLabel
                 {
-                    Text = { Text = "<color=#FFD700>You cannot leave until the match ends!</color>", FontSize = 12, Align = TextAnchor.MiddleCenter },
-                    RectTransform = { AnchorMin = "0 0.3", AnchorMax = "1 0.45" }
+                    Text = { Text = "<color=#88FF88>You can leave anytime with /kd leave</color>", FontSize = 12, Align = TextAnchor.MiddleCenter },
+                    RectTransform = { AnchorMin = "0 0.35", AnchorMax = "1 0.48" }
                 }, panelName);
                 
                 // Confirm button
@@ -5920,11 +5981,19 @@ namespace Oxide.Plugins
                 if (session == null) return;
                 
                 session.SelectedGameMode = mode;
-                session.CanLeaveMatch = false;
+                session.CanLeaveMatch = true; // Players can now leave
                 
                 if (mode == GameMode.Zombies)
                 {
+                    // Add to zombies queue
                     _zombiesQueue.Add(player.userID);
+                    
+                    // First player becomes host
+                    if (_zombiesHostId == 0)
+                    {
+                        _zombiesHostId = player.userID;
+                        _plugin.SendReply(player, "<color=#FFD700>★ You are the HOST! ★</color>\nYou can force start or end the match.");
+                    }
                     
                     // If match already active, spectate until next wave
                     if (_zombiesMatchActive)
@@ -5932,13 +6001,45 @@ namespace Oxide.Plugins
                         // Teleport to spectate position
                         _plugin.TeleportPlayer(player, _config.SpectatePosition);
                         session.IsSpectating = true;
+                        session.IsInMatch = true;
                         _spectatingPlayers.Add(player.userID);
                         _plugin.SendReply(player, "<color=#FF4444>Zombies match in progress! Spectating until next wave...</color>");
                     }
+                    else if (_zombiesLobbyWaiting)
+                    {
+                        // Already waiting for players - just add to queue
+                        _plugin.TeleportPlayer(player, _config.SpectatePosition);
+                        session.IsSpectating = true;
+                        _spectatingPlayers.Add(player.userID);
+                        
+                        int needed = MIN_PLAYERS_TO_START - _zombiesQueue.Count;
+                        if (needed > 0)
+                        {
+                            BroadcastToZombiesQueue($"<color=#00FFFF>{player.displayName} joined!</color> Need {needed} more player(s) to start.");
+                        }
+                        
+                        // Show host UI if enough players
+                        UpdateHostUI();
+                        
+                        // Check if enough players to start
+                        if (_zombiesQueue.Count >= MIN_PLAYERS_TO_START)
+                        {
+                            BroadcastToZombiesQueue("<color=#00FF00>Enough players! Host can now start the match.</color>");
+                        }
+                    }
                     else
                     {
-                        // Start match if enough players or first player
-                        StartZombiesMatch();
+                        // Start waiting lobby
+                        _zombiesLobbyWaiting = true;
+                        _plugin.TeleportPlayer(player, _config.SpectatePosition);
+                        session.IsSpectating = true;
+                        _spectatingPlayers.Add(player.userID);
+                        
+                        int needed = MIN_PLAYERS_TO_START - _zombiesQueue.Count;
+                        _plugin.SendReply(player, $"<color=#00FFFF>Waiting for players...</color> Need {needed} more to start.");
+                        
+                        // Start host UI refresh timer
+                        StartHostUITimer();
                     }
                 }
                 else if (mode == GameMode.Normal)
@@ -5960,11 +6061,380 @@ namespace Oxide.Plugins
             }
             
             /// <summary>
+            /// Broadcast message to all players in zombies queue
+            /// </summary>
+            private void BroadcastToZombiesQueue(string message)
+            {
+                foreach (ulong steamId in _zombiesQueue)
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player != null && player.IsConnected)
+                    {
+                        _plugin.SendReply(player, message);
+                    }
+                }
+            }
+            
+            /// <summary>
+            /// Start the host UI refresh timer
+            /// </summary>
+            private void StartHostUITimer()
+            {
+                _hostUITimer?.Destroy();
+                _hostUITimer = _plugin.timer.Every(1f, () =>
+                {
+                    if (!_zombiesLobbyWaiting && !_zombiesMatchActive)
+                    {
+                        _hostUITimer?.Destroy();
+                        _hostUITimer = null;
+                        return;
+                    }
+                    UpdateHostUI();
+                });
+            }
+            
+            /// <summary>
+            /// Update the host UI for all players in queue
+            /// </summary>
+            private void UpdateHostUI()
+            {
+                foreach (ulong steamId in _zombiesQueue)
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player == null || !player.IsConnected) continue;
+                    
+                    bool isHost = (steamId == _zombiesHostId);
+                    ShowZombiesLobbyUI(player, isHost);
+                }
+            }
+            
+            /// <summary>
+            /// Show the zombies lobby UI (with host controls if applicable)
+            /// </summary>
+            private void ShowZombiesLobbyUI(BasePlayer player, bool isHost)
+            {
+                string panelName = "KillaDome_ZombiesLobby";
+                CuiHelper.DestroyUi(player, panelName);
+                
+                var elements = new CuiElementContainer();
+                
+                int playerCount = _zombiesQueue.Count;
+                bool canStart = playerCount >= MIN_PLAYERS_TO_START || isHost;
+                string statusColor = playerCount >= MIN_PLAYERS_TO_START ? "#00FF00" : "#FFFF00";
+                string status = _zombiesMatchActive ? "MATCH IN PROGRESS" : 
+                               (playerCount >= MIN_PLAYERS_TO_START ? "READY TO START!" : $"Waiting for players... ({playerCount}/{MIN_PLAYERS_TO_START})");
+                
+                // Main panel - top right corner
+                elements.Add(new CuiPanel
+                {
+                    Image = { Color = "0 0 0 0.8" },
+                    RectTransform = { AnchorMin = "0.70 0.70", AnchorMax = "0.99 0.99" },
+                    CursorEnabled = false
+                }, "Overlay", panelName);
+                
+                // Title
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = "<color=#FF4444>⚔ ZOMBIES LOBBY ⚔</color>", FontSize = 18, Align = TextAnchor.MiddleCenter },
+                    RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
+                }, panelName);
+                
+                // Status
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = $"<color={statusColor}>{status}</color>", FontSize = 14, Align = TextAnchor.MiddleCenter },
+                    RectTransform = { AnchorMin = "0 0.70", AnchorMax = "1 0.83" }
+                }, panelName);
+                
+                // Player list
+                string playerList = "Players: ";
+                int count = 0;
+                foreach (ulong steamId in _zombiesQueue)
+                {
+                    var p = BasePlayer.FindByID(steamId);
+                    if (p != null)
+                    {
+                        string hostMarker = steamId == _zombiesHostId ? " ★" : "";
+                        playerList += (count > 0 ? ", " : "") + p.displayName + hostMarker;
+                        count++;
+                    }
+                }
+                
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = playerList, FontSize = 11, Align = TextAnchor.UpperLeft, Color = "0.8 0.8 0.8 1" },
+                    RectTransform = { AnchorMin = "0.03 0.40", AnchorMax = "0.97 0.68" }
+                }, panelName);
+                
+                // Host indicator
+                if (isHost)
+                {
+                    elements.Add(new CuiLabel
+                    {
+                        Text = { Text = "<color=#FFD700>★ YOU ARE HOST ★</color>", FontSize = 12, Align = TextAnchor.MiddleCenter },
+                        RectTransform = { AnchorMin = "0 0.32", AnchorMax = "1 0.40" }
+                    }, panelName);
+                    
+                    if (!_zombiesMatchActive)
+                    {
+                        // Force Start button (host only)
+                        elements.Add(new CuiButton
+                        {
+                            Button = { Color = canStart ? "0.2 0.6 0.2 1" : "0.3 0.3 0.3 1", Command = "kd.host.forcestart" },
+                            RectTransform = { AnchorMin = "0.05 0.15", AnchorMax = "0.48 0.30" },
+                            Text = { Text = "FORCE START", FontSize = 12, Align = TextAnchor.MiddleCenter }
+                        }, panelName);
+                    }
+                    else
+                    {
+                        // End Match button (host only, during match)
+                        elements.Add(new CuiButton
+                        {
+                            Button = { Color = "0.6 0.2 0.2 1", Command = "kd.host.endmatch" },
+                            RectTransform = { AnchorMin = "0.05 0.15", AnchorMax = "0.48 0.30" },
+                            Text = { Text = "END MATCH", FontSize = 12, Align = TextAnchor.MiddleCenter }
+                        }, panelName);
+                    }
+                }
+                
+                // Leave button (everyone)
+                elements.Add(new CuiButton
+                {
+                    Button = { Color = "0.5 0.3 0.1 1", Command = "kd.leave" },
+                    RectTransform = { AnchorMin = "0.52 0.15", AnchorMax = "0.95 0.30" },
+                    Text = { Text = "LEAVE", FontSize = 12, Align = TextAnchor.MiddleCenter }
+                }, panelName);
+                
+                // Leave hint
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = "Type /kd leave to exit", FontSize = 10, Align = TextAnchor.MiddleCenter, Color = "0.6 0.6 0.6 1" },
+                    RectTransform = { AnchorMin = "0 0.02", AnchorMax = "1 0.12" }
+                }, panelName);
+                
+                CuiHelper.AddUi(player, elements);
+            }
+            
+            /// <summary>
+            /// Hide the zombies lobby UI for a player
+            /// </summary>
+            private void HideZombiesLobbyUI(BasePlayer player)
+            {
+                CuiHelper.DestroyUi(player, "KillaDome_ZombiesLobby");
+            }
+            
+            /// <summary>
+            /// Host force starts the match
+            /// </summary>
+            public void HostForceStart(BasePlayer player)
+            {
+                if (player.userID != _zombiesHostId)
+                {
+                    _plugin.SendReply(player, "<color=#FF4444>Only the host can force start!</color>");
+                    return;
+                }
+                
+                if (_zombiesMatchActive)
+                {
+                    _plugin.SendReply(player, "<color=#FF4444>Match already in progress!</color>");
+                    return;
+                }
+                
+                if (_zombiesQueue.Count < 1)
+                {
+                    _plugin.SendReply(player, "<color=#FF4444>Need at least 1 player to start!</color>");
+                    return;
+                }
+                
+                BroadcastToZombiesQueue("<color=#00FF00>Host force started the match!</color>");
+                StartZombiesMatch();
+            }
+            
+            /// <summary>
+            /// Host ends the match
+            /// </summary>
+            public void HostEndMatch(BasePlayer player)
+            {
+                if (player.userID != _zombiesHostId)
+                {
+                    _plugin.SendReply(player, "<color=#FF4444>Only the host can end the match!</color>");
+                    return;
+                }
+                
+                BroadcastToZombiesQueue("<color=#FF8800>Host ended the match!</color>");
+                EndZombiesMatch();
+            }
+            
+            /// <summary>
+            /// Player wants to leave the match
+            /// </summary>
+            public void PlayerLeave(BasePlayer player)
+            {
+                var session = _plugin.GetSession(player.userID);
+                if (session == null) return;
+                
+                GameMode mode = session.SelectedGameMode;
+                
+                if (mode == GameMode.Zombies)
+                {
+                    LeaveZombiesMatch(player);
+                }
+                else if (mode == GameMode.Normal)
+                {
+                    LeaveNormalMatch(player);
+                }
+                else
+                {
+                    _plugin.SendReply(player, "<color=#FFFF00>You are not in a match.</color>");
+                }
+            }
+            
+            /// <summary>
+            /// Player leaves zombies match
+            /// </summary>
+            private void LeaveZombiesMatch(BasePlayer player)
+            {
+                ulong steamId = player.userID;
+                
+                _zombiesQueue.Remove(steamId);
+                _spectatingPlayers.Remove(steamId);
+                
+                var session = _plugin.GetSession(steamId);
+                if (session != null)
+                {
+                    session.IsInMatch = false;
+                    session.IsSpectating = false;
+                    session.SelectedGameMode = GameMode.None;
+                    session.CanLeaveMatch = true;
+                }
+                
+                HideZombiesLobbyUI(player);
+                _plugin.TeleportToLobby(player);
+                _plugin.SendReply(player, "<color=#FFFF00>You left the zombies match.</color>");
+                
+                // Transfer host if host left
+                if (steamId == _zombiesHostId)
+                {
+                    TransferHost();
+                }
+                
+                // Check if lobby should be closed (no players left)
+                if (_zombiesQueue.Count == 0)
+                {
+                    if (_zombiesMatchActive)
+                    {
+                        EndZombiesMatch();
+                    }
+                    else
+                    {
+                        _zombiesLobbyWaiting = false;
+                        _zombiesHostId = 0;
+                        _hostUITimer?.Destroy();
+                        _hostUITimer = null;
+                    }
+                }
+                else
+                {
+                    // Update remaining players UI
+                    BroadcastToZombiesQueue($"<color=#FFFF00>{player.displayName} left the match.</color>");
+                    UpdateHostUI();
+                }
+                
+                _plugin.Puts($"{player.displayName} left zombies mode");
+            }
+            
+            /// <summary>
+            /// Player leaves normal match
+            /// </summary>
+            private void LeaveNormalMatch(BasePlayer player)
+            {
+                ulong steamId = player.userID;
+                
+                _normalQueue.Remove(steamId);
+                
+                var session = _plugin.GetSession(steamId);
+                if (session != null)
+                {
+                    session.IsInMatch = false;
+                    session.SelectedGameMode = GameMode.None;
+                    session.CanLeaveMatch = true;
+                }
+                
+                _plugin.TeleportToLobby(player);
+                _plugin.SendReply(player, "<color=#FFFF00>You left the normal match.</color>");
+                
+                _plugin.Puts($"{player.displayName} left normal mode");
+            }
+            
+            /// <summary>
+            /// Transfer host to next player in queue
+            /// </summary>
+            private void TransferHost()
+            {
+                _zombiesHostId = 0;
+                
+                if (_zombiesQueue.Count > 0)
+                {
+                    _zombiesHostId = _zombiesQueue.First();
+                    
+                    var newHost = BasePlayer.FindByID(_zombiesHostId);
+                    if (newHost != null && newHost.IsConnected)
+                    {
+                        _plugin.SendReply(newHost, "<color=#FFD700>★ You are now the HOST! ★</color>");
+                        BroadcastToZombiesQueue($"<color=#FFD700>{newHost.displayName} is now the host.</color>");
+                    }
+                }
+            }
+            
+            /// <summary>
+            /// Handle player disconnect - transfer host if needed
+            /// </summary>
+            public void OnPlayerDisconnected(ulong steamId)
+            {
+                if (_zombiesQueue.Contains(steamId))
+                {
+                    _zombiesQueue.Remove(steamId);
+                    _spectatingPlayers.Remove(steamId);
+                    
+                    if (steamId == _zombiesHostId)
+                    {
+                        TransferHost();
+                    }
+                    
+                    // Check if lobby should be closed
+                    if (_zombiesQueue.Count == 0)
+                    {
+                        if (_zombiesMatchActive)
+                        {
+                            EndZombiesMatch();
+                        }
+                        else
+                        {
+                            _zombiesLobbyWaiting = false;
+                            _zombiesHostId = 0;
+                        }
+                    }
+                    else
+                    {
+                        UpdateHostUI();
+                    }
+                }
+                
+                if (_normalQueue.Contains(steamId))
+                {
+                    _normalQueue.Remove(steamId);
+                }
+            }
+            
+            /// <summary>
             /// Start zombies match
             /// </summary>
             private void StartZombiesMatch()
             {
                 _zombiesMatchActive = true;
+                _zombiesLobbyWaiting = false;
+                
+                BroadcastToZombiesQueue("<color=#00FF00>⚔ MATCH STARTING! ⚔</color>");
                 
                 foreach (ulong steamId in _zombiesQueue)
                 {
@@ -5978,10 +6448,16 @@ namespace Oxide.Plugins
                     session.IsSpectating = false;
                     _spectatingPlayers.Remove(steamId);
                     
+                    // Hide lobby UI and show match UI
+                    HideZombiesLobbyUI(player);
+                    
                     // Teleport to zombies arena and give loadout
                     _plugin.TeleportPlayer(player, _config.ZombiesArenaPosition);
                     _plugin.GiveLoadout(player);
                 }
+                
+                // Update UI for all players (now in match mode)
+                UpdateHostUI();
                 
                 // Start zombie wave mode
                 if (_plugin._zombieIntegration.IsNecroZombiesLoaded())
@@ -6074,6 +6550,7 @@ namespace Oxide.Plugins
             public void EndZombiesMatch()
             {
                 _zombiesMatchActive = false;
+                _zombiesLobbyWaiting = false;
                 
                 // Stop zombie waves
                 _plugin._zombieIntegration.StopWaveMode();
@@ -6093,11 +6570,20 @@ namespace Oxide.Plugins
                     session.SelectedGameMode = GameMode.None;
                     session.CanLeaveMatch = true;
                     
+                    // Hide lobby UI
+                    HideZombiesLobbyUI(player);
+                    
                     _plugin.TeleportToLobby(player);
+                    _plugin.SendReply(player, "<color=#FF8800>Match ended! Returned to lobby.</color>");
                 }
                 
                 _zombiesQueue.Clear();
                 _spectatingPlayers.Clear();
+                _zombiesHostId = 0;
+                
+                // Stop host UI timer
+                _hostUITimer?.Destroy();
+                _hostUITimer = null;
                 
                 _plugin.Puts("Zombies match ended!");
             }
