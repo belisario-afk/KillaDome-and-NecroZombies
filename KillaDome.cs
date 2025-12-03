@@ -2045,6 +2045,14 @@ namespace Oxide.Plugins
             CuiHelper.DestroyUi(player, "MatchEndStats");
         }
         
+        [ConsoleCommand("kd.buylife")]
+        private void CmdBuyLife(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            _gameModeSystem.TryBuyLife(player);
+        }
+        
         [ConsoleCommand("killadome.tab")]
         private void CmdUITab(ConsoleSystem.Arg arg)
         {
@@ -6960,6 +6968,10 @@ namespace Oxide.Plugins
             /// </summary>
             public void OnZombiesWaveEnd()
             {
+                // Cancel all-dead timer when wave ends
+                _allDeadTimer?.Destroy();
+                _allDeadTimer = null;
+                
                 foreach (ulong steamId in _spectatingPlayers.ToList())
                 {
                     var player = BasePlayer.FindByID(steamId);
@@ -6970,6 +6982,9 @@ namespace Oxide.Plugins
                     
                     session.IsSpectating = false;
                     _spectatingPlayers.Remove(steamId);
+                    
+                    // Hide buy life UI
+                    HideBuyLifeUI(player);
                     
                     // Spawn with loadout
                     _plugin.TeleportPlayer(player, _config.ZombiesArenaPosition);
@@ -6995,9 +7010,212 @@ namespace Oxide.Plugins
                     if (player != null && player.IsConnected)
                     {
                         _plugin.TeleportPlayer(player, _config.SpectatePosition);
-                        _plugin.SendReply(player, "<color=#FF8800>You died! Spectating until next wave...</color>");
+                        
+                        // Check if all players are dead
+                        if (AreAllPlayersDead())
+                        {
+                            // Show buy life UI to all dead players
+                            ShowBuyLifeUIToAllDead();
+                            _plugin.SendReply(player, "<color=#FF4444>ALL PLAYERS DOWN!</color> Buy your life back for <color=#FFD700>3000 Blood Tokens</color> or match ends in 30 seconds!");
+                            
+                            // Start countdown - if no one buys life in 30 seconds, end match
+                            StartAllDeadCountdown();
+                        }
+                        else
+                        {
+                            _plugin.SendReply(player, "<color=#FF8800>You died!</color> Spectating until next wave... (or buy life for <color=#FFD700>3000 tokens</color>)");
+                            ShowBuyLifeUI(player);
+                        }
                     }
                 });
+            }
+            
+            private Timer _allDeadTimer = null;
+            private const int BUY_LIFE_COST = 3000;
+            private const float ALL_DEAD_COUNTDOWN = 30f;
+            
+            /// <summary>
+            /// Check if all active players in the match are dead (spectating)
+            /// </summary>
+            private bool AreAllPlayersDead()
+            {
+                if (!_zombiesMatchActive) return false;
+                
+                // Get all players in the match who are not spectating
+                int aliveCount = 0;
+                foreach (ulong steamId in _zombiesQueue)
+                {
+                    if (!_spectatingPlayers.Contains(steamId))
+                    {
+                        aliveCount++;
+                    }
+                }
+                
+                return aliveCount == 0 && _zombiesQueue.Count > 0;
+            }
+            
+            /// <summary>
+            /// Start countdown when all players are dead
+            /// </summary>
+            private void StartAllDeadCountdown()
+            {
+                // Cancel any existing timer
+                _allDeadTimer?.Destroy();
+                
+                _allDeadTimer = _plugin.timer.Once(ALL_DEAD_COUNTDOWN, () =>
+                {
+                    // Check if still all dead
+                    if (AreAllPlayersDead() && _zombiesMatchActive)
+                    {
+                        // End the match - everyone failed
+                        foreach (ulong steamId in _zombiesQueue.ToList())
+                        {
+                            var player = BasePlayer.FindByID(steamId);
+                            if (player != null && player.IsConnected)
+                            {
+                                HideBuyLifeUI(player);
+                                _plugin.SendReply(player, "<color=#FF4444>GAME OVER!</color> No one bought their life back...");
+                            }
+                        }
+                        EndZombiesMatch();
+                    }
+                });
+            }
+            
+            /// <summary>
+            /// Show buy life UI to a spectating player
+            /// </summary>
+            private void ShowBuyLifeUI(BasePlayer player)
+            {
+                if (player == null) return;
+                
+                CuiHelper.DestroyUi(player, "BuyLifeUI");
+                var container = new CuiElementContainer();
+                
+                var session = _plugin.GetSession(player.userID);
+                int balance = session?.Profile?.Tokens ?? 0;
+                bool canAfford = balance >= BUY_LIFE_COST;
+                
+                // Main panel - bottom right
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.1 0.05 0.05 0.95" },
+                    RectTransform = { AnchorMin = "0.70 0.15", AnchorMax = "0.98 0.35" }
+                }, "Overlay", "BuyLifeUI");
+                
+                // Title
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "💀 YOU DIED 💀", FontSize = 18, Align = TextAnchor.MiddleCenter, Color = "1 0.3 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.70", AnchorMax = "1 0.95" }
+                }, "BuyLifeUI");
+                
+                // Cost info
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = $"Buy Life: <color=#FFD700>{BUY_LIFE_COST}</color> Blood Tokens", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0 0.45", AnchorMax = "1 0.65" }
+                }, "BuyLifeUI");
+                
+                // Balance
+                string balanceColor = canAfford ? "0.5 1 0.5 1" : "1 0.3 0.3 1";
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = $"Your Balance: {balance}", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = balanceColor },
+                    RectTransform = { AnchorMin = "0 0.28", AnchorMax = "1 0.45" }
+                }, "BuyLifeUI");
+                
+                // Buy button
+                string buttonColor = canAfford ? "0.2 0.6 0.2 0.9" : "0.3 0.3 0.3 0.7";
+                container.Add(new CuiButton
+                {
+                    Button = { Color = buttonColor, Command = canAfford ? "kd.buylife" : "" },
+                    Text = { Text = canAfford ? "BUY LIFE" : "NOT ENOUGH TOKENS", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
+                    RectTransform = { AnchorMin = "0.10 0.05", AnchorMax = "0.90 0.25" }
+                }, "BuyLifeUI");
+                
+                CuiHelper.AddUi(player, container);
+            }
+            
+            /// <summary>
+            /// Show buy life UI to all dead players
+            /// </summary>
+            private void ShowBuyLifeUIToAllDead()
+            {
+                foreach (ulong steamId in _spectatingPlayers.ToList())
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player != null && player.IsConnected)
+                    {
+                        ShowBuyLifeUI(player);
+                    }
+                }
+            }
+            
+            /// <summary>
+            /// Hide buy life UI
+            /// </summary>
+            public void HideBuyLifeUI(BasePlayer player)
+            {
+                if (player != null)
+                {
+                    CuiHelper.DestroyUi(player, "BuyLifeUI");
+                }
+            }
+            
+            /// <summary>
+            /// Player attempts to buy their life back
+            /// </summary>
+            public bool TryBuyLife(BasePlayer player)
+            {
+                if (player == null) return false;
+                
+                var session = _plugin.GetSession(player.userID);
+                if (session == null) return false;
+                
+                // Check if in zombies mode and spectating
+                if (session.SelectedGameMode != GameMode.Zombies || !session.IsSpectating)
+                {
+                    _plugin.SendReply(player, "<color=#FF4444>You can only buy life while spectating in zombies mode!</color>");
+                    return false;
+                }
+                
+                // Check balance
+                if (session.Profile.Tokens < BUY_LIFE_COST)
+                {
+                    _plugin.SendReply(player, $"<color=#FF4444>Not enough tokens! Need {BUY_LIFE_COST}, you have {session.Profile.Tokens}</color>");
+                    return false;
+                }
+                
+                // Deduct tokens
+                session.Profile.Tokens -= BUY_LIFE_COST;
+                
+                // Revive the player
+                session.IsSpectating = false;
+                _spectatingPlayers.Remove(player.userID);
+                
+                // Hide UI
+                HideBuyLifeUI(player);
+                
+                // Cancel all-dead timer if someone is now alive
+                if (!AreAllPlayersDead())
+                {
+                    _allDeadTimer?.Destroy();
+                    _allDeadTimer = null;
+                }
+                
+                // Teleport to arena and respawn
+                _plugin.TeleportPlayer(player, _config.ZombiesArenaPosition);
+                player.Respawn();
+                _plugin.GiveLoadout(player);
+                
+                _plugin.SendReply(player, $"<color=#44FF44>Life purchased!</color> You're back in the fight! (-{BUY_LIFE_COST} tokens)");
+                _plugin.Puts($"Player {player.displayName} bought their life back for {BUY_LIFE_COST} tokens");
+                
+                // Update HUD
+                _plugin.UpdateZombieKillHUD(player, session);
+                
+                return true;
             }
             
             /// <summary>
@@ -7007,6 +7225,10 @@ namespace Oxide.Plugins
             {
                 _zombiesMatchActive = false;
                 _zombiesLobbyWaiting = false;
+                
+                // Cancel all-dead timer
+                _allDeadTimer?.Destroy();
+                _allDeadTimer = null;
                 
                 // Stop zombie waves
                 _plugin._zombieIntegration.StopWaveMode();
@@ -7020,6 +7242,9 @@ namespace Oxide.Plugins
                     
                     var session = _plugin.GetSession(steamId);
                     if (session == null) continue;
+                    
+                    // Hide buy life UI
+                    HideBuyLifeUI(player);
                     
                     // Show match stats summary
                     ShowMatchEndStats(player, session);
