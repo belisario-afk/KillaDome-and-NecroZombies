@@ -724,10 +724,17 @@ namespace Oxide.Plugins
                 return;
             }
 
-            var pos = player.transform.position + player.transform.forward * 2f + Vector3.up * 0.1f;
-            var rot = Quaternion.LookRotation(-player.transform.forward, Vector3.up);
+            // Spawn 2m in front of player, at ground level
+            var pos = player.transform.position + player.eyes.HeadForward() * 2f;
+            pos.y = player.transform.position.y; // Keep at player's ground level
+            
+            // Face the machine towards the player (so they can see the front)
+            Vector3 lookDir = (player.transform.position - pos).normalized;
+            lookDir.y = 0; // Keep machine upright
+            var rot = Quaternion.LookRotation(lookDir, Vector3.up);
 
             SpawnPerkMachine(pos, rot, perkName);
+            player.ChatMessage($"Spawned {perkName} machine facing you.");
         }
 
         private void SpawnPerkMachine(Vector3 pos, Quaternion rot, string perkName)
@@ -767,11 +774,16 @@ namespace Oxide.Plugins
                 vm.sellOrders.sellOrders.Clear();
             vm.inventory?.Clear();
 
+            // Make machine invulnerable - lock it and protect from damage
             if (cfg.LockSpawnedMachines)
             {
                 try
                 {
                     vm.SetFlag(BaseEntity.Flags.Locked, true);
+                    vm.SetFlag(BaseEntity.Flags.Reserved8, true); // Protected flag
+                    
+                    // Remove health component or set to invulnerable
+                    vm.InitializeHealth(float.MaxValue, float.MaxValue);
                 }
                 catch (Exception ex)
                 {

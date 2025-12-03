@@ -3068,7 +3068,7 @@ namespace Oxide.Plugins
             
             public void ShowLobbyUI(BasePlayer player)
             {
-                ShowLobbyUIWithTab(player, "play");
+                ShowLobbyUIWithTab(player, "welcome");
             }
             
             public void ShowLobbyUIWithTab(BasePlayer player, string tab)
@@ -3113,11 +3113,11 @@ namespace Oxide.Plugins
                     RectTransform = { AnchorMin = "0 0.88", AnchorMax = "1 0.94" }
                 }, UI_MAIN, "TabBar");
                 
-                AddTabButtonFullscreen(container, "TabBar", "PLAY", 0, tab == "play", "killadome.tab play");
-                AddTabButtonFullscreen(container, "TabBar", "LOADOUTS", 1, tab == "loadouts", "killadome.tab loadouts");
-                AddTabButtonFullscreen(container, "TabBar", "STORE", 2, tab == "store", "killadome.tab store");
-                AddTabButtonFullscreen(container, "TabBar", "STATS", 3, tab == "stats", "killadome.tab stats");
-                AddTabButtonFullscreen(container, "TabBar", "SETTINGS", 4, tab == "settings", "killadome.tab settings");
+                AddTabButtonFullscreen(container, "TabBar", "WELCOME", 0, tab == "welcome", "killadome.tab welcome");
+                AddTabButtonFullscreen(container, "TabBar", "PLAY", 1, tab == "play", "killadome.tab play");
+                AddTabButtonFullscreen(container, "TabBar", "LOADOUTS", 2, tab == "loadouts", "killadome.tab loadouts");
+                AddTabButtonFullscreen(container, "TabBar", "STORE", 3, tab == "store", "killadome.tab store");
+                AddTabButtonFullscreen(container, "TabBar", "STATS", 4, tab == "stats", "killadome.tab stats");
                 
                 // Close button - top right corner
                 container.Add(new CuiButton
@@ -3137,6 +3137,9 @@ namespace Oxide.Plugins
                 // Show appropriate tab content
                 switch (tab.ToLower())
                 {
+                    case "welcome":
+                        ShowWelcomeTab(container, player);
+                        break;
                     case "play":
                         ShowPlayTab(container, player);
                         break;
@@ -3153,7 +3156,7 @@ namespace Oxide.Plugins
                         ShowSettingsTab(container, player);
                         break;
                     default:
-                        ShowPlayTab(container, player);
+                        ShowWelcomeTab(container, player);
                         break;
                 }
                 
@@ -3193,6 +3196,129 @@ namespace Oxide.Plugins
                     RectTransform = { AnchorMin = $"{minX} 0.80", AnchorMax = $"{maxX} 0.86" },
                     Text = { Text = text, FontSize = 14, Align = TextAnchor.MiddleCenter }
                 }, parent);
+            }
+            
+            private void ShowWelcomeTab(CuiElementContainer container, BasePlayer player)
+            {
+                // Welcome header with game title
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.08 0.08 0.12 0.9" },
+                    RectTransform = { AnchorMin = "0.02 0.88", AnchorMax = "0.98 0.98" }
+                }, UI_TAB_CONTAINER, "WelcomeHeader");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "🎮 WELCOME TO KILLADOME 🎮", FontSize = 28, Align = TextAnchor.MiddleCenter, Color = "1 0.7 0.2 1" },
+                    RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" }
+                }, "WelcomeHeader");
+                
+                // Starting tokens info
+                var session = _plugin.GetSession(player.userID);
+                int tokens = session?.Profile?.Tokens ?? 500;
+                
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.12 0.25 0.12 0.95" },
+                    RectTransform = { AnchorMin = "0.25 0.78", AnchorMax = "0.75 0.86" }
+                }, UI_TAB_CONTAINER, "TokensInfo");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = $"💰 You have {tokens} Blood Tokens! 💰", FontSize = 18, Align = TextAnchor.MiddleCenter, Color = "0.8 1 0.6 1" },
+                    RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" }
+                }, "TokensInfo");
+                
+                // Main content - 3 columns for tabs explanation
+                float colWidth = 0.30f;
+                float colSpacing = 0.02f;
+                float startX = 0.03f;
+                
+                // Column 1: STORE
+                float col1X = startX;
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.15 0.12 0.08 0.95" },
+                    RectTransform = { AnchorMin = $"{col1X} 0.30", AnchorMax = $"{col1X + colWidth} 0.75" }
+                }, UI_TAB_CONTAINER, "StoreCol");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "🛒 STORE", FontSize = 20, Align = TextAnchor.MiddleCenter, Color = "0.3 0.8 1 1" },
+                    RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
+                }, "StoreCol");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "Buy weapons, skins,\nand armor with\nBlood Tokens!\n\n• Guns\n• Gun Skins\n• Clothing\n• Armor", FontSize = 13, Align = TextAnchor.UpperCenter, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0.05 0.05", AnchorMax = "0.95 0.82" }
+                }, "StoreCol");
+                
+                // Column 2: LOADOUTS
+                float col2X = col1X + colWidth + colSpacing;
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.15 0.12 0.08 0.95" },
+                    RectTransform = { AnchorMin = $"{col2X} 0.30", AnchorMax = $"{col2X + colWidth} 0.75" }
+                }, UI_TAB_CONTAINER, "LoadoutsCol");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "🎒 LOADOUTS", FontSize = 20, Align = TextAnchor.MiddleCenter, Color = "0.9 0.6 0.2 1" },
+                    RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
+                }, "LoadoutsCol");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "Customize your\nweapon loadout!\n\n• Drag & drop guns\n• Set your gear\n• Save loadouts\n• Ready for battle!", FontSize = 13, Align = TextAnchor.UpperCenter, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0.05 0.05", AnchorMax = "0.95 0.82" }
+                }, "LoadoutsCol");
+                
+                // Column 3: PLAY
+                float col3X = col2X + colWidth + colSpacing;
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.15 0.12 0.08 0.95" },
+                    RectTransform = { AnchorMin = $"{col3X} 0.30", AnchorMax = $"{col3X + colWidth} 0.75" }
+                }, UI_TAB_CONTAINER, "PlayCol");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "⚔️ PLAY", FontSize = 20, Align = TextAnchor.MiddleCenter, Color = "0.9 0.3 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
+                }, "PlayCol");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "Join a game!\n\n<color=#FF4444>RED ORB</color>\nZombies Mode\n\n<color=#44FF44>GREEN ORB</color>\nNormal PvP", FontSize = 13, Align = TextAnchor.UpperCenter, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0.05 0.05", AnchorMax = "0.95 0.82" }
+                }, "PlayCol");
+                
+                // Game flow explanation at bottom
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.06 0.06 0.10 0.95" },
+                    RectTransform = { AnchorMin = "0.03 0.02", AnchorMax = "0.97 0.27" }
+                }, UI_TAB_CONTAINER, "GameFlow");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "📋 HOW TO PLAY", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 0.8 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.82", AnchorMax = "1 0.98" }
+                }, "GameFlow");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "1️⃣ Use the STORE tab to buy guns, skins & armor\n2️⃣ Use the LOADOUTS tab to equip your weapons\n3️⃣ Walk into the RED or GREEN teleporter orb in the lobby\n4️⃣ Kill zombies to earn more Blood Tokens! 🩸", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0.05 0.10", AnchorMax = "0.95 0.78" }
+                }, "GameFlow");
+                
+                // Helpful commands
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "Commands: /kd open (this menu) • /kd leave (leave match) • /kd mode (check status)", FontSize = 11, Align = TextAnchor.MiddleCenter, Color = "0.6 0.6 0.6 1" },
+                    RectTransform = { AnchorMin = "0.05 0.01", AnchorMax = "0.95 0.10" }
+                }, "GameFlow");
             }
             
             private void ShowPlayTab(CuiElementContainer container, BasePlayer player)
