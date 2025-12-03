@@ -8,8 +8,8 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Simple Prefab Editor", "belisario-afk", "8.0.0")]
-    [Description("Spawn, select and live-edit prefab entities with mystery boxes, templates, SignArtist images, rigid group editing, and a Black Ops style Mystery Box with ImageLibrary GUI reel, cascading gun drops, proximity-buy UI, auto-registration of medieval large wood boxes, spawn point saving, 10-minute respawn timer, and 2-minute active duration.")]
+    [Info("Simple Prefab Editor", "belisario-afk", "8.1.0")]
+    [Description("Black Ops style Mystery Box with KillaDome Blood Token integration, proximity-buy UI, auto-registration of medieval large wood boxes, spawn point saving, 10-minute respawn timer, and 2-minute active duration.")]
     public class SimplePrefabEditor : RustPlugin
     {
         private const string PermissionUse = "simpleprefabeditor.use";
@@ -1601,9 +1601,20 @@ namespace Oxide.Plugins
         /// </summary>
         private bool ChargeMysteryBoxUse(BasePlayer player, uint boxId)
         {
-            // TODO: integrate your currency plugin here, e.g.:
-            // object result = MyEconomyPlugin?.Call("ChargePlayerForMysteryBox", player, boxId);
-            // return result is bool b && b;
+            // Get cost from KillaDome (default 100 Blood Tokens)
+            object costResult = Interface.CallHook("OnMysteryBoxCost", player, boxId);
+            int cost = 100; // Default cost
+            if (costResult is int c)
+                cost = c;
+            
+            // Try to charge the player via KillaDome Blood Tokens
+            object chargeResult = Interface.CallHook("OnMysteryBoxCharge", player, boxId, cost);
+            
+            // If hook returned a bool, use it; otherwise allow the roll (for testing without economy)
+            if (chargeResult is bool success)
+                return success;
+            
+            // No economy plugin handling this - allow free use
             return true;
         }
 
@@ -2431,6 +2442,12 @@ namespace Oxide.Plugins
             if (!_boxData.MysteryBoxes.ContainsKey(boxId))
                 return;
 
+            // Get cost from KillaDome hook (default 100)
+            object costResult = Interface.CallHook("OnMysteryBoxCost", player, boxId);
+            int cost = 100;
+            if (costResult is int c)
+                cost = c;
+
             string panelName = GetBuyUiName(boxId, player.userID);
 
             var container = new CuiElementContainer();
@@ -2446,12 +2463,12 @@ namespace Oxide.Plugins
             };
             container.Add(panel, "Overlay", panelName);
 
-            // Label
+            // Label with cost
             var label = new CuiLabel
             {
                 Text =
                 {
-                    Text = "Mystery Box - Click BUY to roll",
+                    Text = $"Mystery Box - <color=#00ffff>{cost} Blood Tokens</color>",
                     FontSize = 15,
                     Align = TextAnchor.MiddleLeft,
                     Color = "1 1 0 1"

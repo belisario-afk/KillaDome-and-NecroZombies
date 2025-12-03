@@ -1128,6 +1128,49 @@ namespace Oxide.Plugins
             return success;
         }
         
+        /// <summary>
+        /// Hook: SimplePrefabEditor (Mystery Box) requests cost for a player to use the Mystery Box.
+        /// Returns the token cost (default 100 Blood Tokens).
+        /// </summary>
+        private object OnMysteryBoxCost(BasePlayer player, uint boxId)
+        {
+            if (player == null) return 100;
+            
+            // Default Mystery Box cost - 100 Blood Tokens
+            int cost = 100;
+            LogDebug($"OnMysteryBoxCost: {player.displayName} checking Mystery Box {boxId} cost: {cost}");
+            return cost;
+        }
+        
+        /// <summary>
+        /// Hook: SimplePrefabEditor (Mystery Box) requests to charge player for using the Mystery Box.
+        /// Returns true if charge succeeded, false if player cannot afford.
+        /// </summary>
+        private object OnMysteryBoxCharge(BasePlayer player, uint boxId, int cost)
+        {
+            if (player == null || _tokenEconomy == null) return false;
+            
+            int balance = _tokenEconomy.GetBalance(player.userID);
+            
+            if (balance < cost)
+            {
+                player.ChatMessage($"<color=#FF4444>Not enough Blood Tokens!</color> Need {cost}, have {balance}");
+                LogDebug($"OnMysteryBoxCharge: {player.displayName} cannot afford Mystery Box ({balance}/{cost})");
+                return false;
+            }
+            
+            // Deduct tokens
+            bool success = _tokenEconomy.SpendTokens(player.userID, cost);
+            
+            if (success)
+            {
+                player.ChatMessage($"<color=#00FF00>Used Mystery Box for {cost} Blood Tokens!</color> Balance: {balance - cost}");
+                LogDebug($"OnMysteryBoxCharge: {player.displayName} used Mystery Box for {cost} tokens");
+            }
+            
+            return success;
+        }
+        
         #endregion
         
         #region Helper Methods
