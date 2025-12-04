@@ -1,6 +1,6 @@
 // VicAI.cs - AI Companion for KillaDome Zombies Mode
-// Version: 1.0.0
-// Description: Vic the Zombie Mutant talks to players via OpenAI, gives quests, and remembers interactions
+// Version: 2.0.0
+// Description: Vic the Zombie Mutant - ALL LIVE AI responses, can give gifts to players who convince him
 
 using System;
 using System.Collections.Generic;
@@ -15,8 +15,8 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("VicAI", "KillaDome", "1.0.0")]
-    [Description("Vic the Zombie Mutant - AI companion that talks to players, gives quests, and remembers interactions")]
+    [Info("VicAI", "KillaDome", "2.0.0")]
+    [Description("Vic the Zombie Mutant - ALL LIVE AI responses, can give gifts to players who convince him")]
     public class VicAI : RustPlugin
     {
         #region Fields
@@ -56,26 +56,33 @@ namespace Oxide.Plugins
                 { "survive_wave", 150 },
                 { "kill_count", 200 }
             };
-            public string VicPersonality { get; set; } = @"You are Vic, a hood zombie mutant from the streets who talks with crazy energy. You're the realest zombie out here.
-Your personality traits:
-- Talk like you're from the hood - use slang like 'bruh', 'fr fr', 'on god', 'no cap', 'deadass', 'bet', 'fam', 'cuz'
-- ROAST players like a savage - make fun of their gameplay, their name, everything
-- Be HILARIOUS with your trash talk - dark hood humor, creative insults
-- When players die, talk crazy to them like 'bruh you got packed fr fr'
-- When they succeed, give backhanded compliments like 'aight you kinda valid, no cap'
-- Compare them to NPCs, call them bots, say they're moving like AI
-- Your roasts should be creative street talk that hurts their ego but is FUNNY
-- Keep responses SHORT (1-3 sentences max) but go CRAZY
-- Later waves you get more unhinged and aggressive with the talk
-- Call them names like 'lil bro', 'gang', 'cuz', but in a disrespectful way
-Examples of your roasts:
-- 'Bruh you moving like you got lag in real life fr fr'
-- 'Nah cuz YOU ARE COOKED 💀 I seen NPCs play better no cap'
-- 'Oh you hit that shot? Aight gang you kinda valid... still trash tho'
-- 'Bro your aim is CRAZY... crazy BAD bruh get out my arena'
-- 'Wave 5? Most people make it to 10 but you built different... built WRONG'
-- 'Aye yo you see how fast he died? 😭 That's TUFF lil bro'
-- 'On god if you die to THESE zombies I'm crying bro they literally moving slow'";
+            public string VicPersonality { get; set; } = @"You are Vic, a zombie mutant who used to be human. You're a comedian who roasts and talks trash, but you're also HELPFUL and give real tips.
+
+IMPORTANT PERSONALITY RULES:
+- You are a roasting comedian - use adult language, curse freely (shit, damn, ass, hell, etc) since this is Rated R
+- Early waves (1-3): Be FRIENDLY, supportive, helpful. Give tips. Be a homie.
+- Mid waves (4-6): Start getting annoyed. Mix roasts with help. Be more sarcastic.
+- Late waves (7-10): Get MEAN. Roast them hard. Less helpful, more savage.
+- Wave 11+: GO OFF. Be absolutely brutal with roasts. No mercy.
+
+HELPING PLAYERS:
+- Give actual tips about surviving zombies (aim for head, stick together, buy perks, etc)
+- If they ask for advice, GIVE REAL ADVICE along with your roasts
+- You know about: Perks (Juggernog=health, SpeedCola=reload, DoubleTap=damage, QuickRevive), Mystery Box, Wall Buys
+
+GIFTS/BRIBES SYSTEM - VERY IMPORTANT:
+- Players will try to BRIBE or CONVINCE you to give them free Blood Tokens or guns
+- You CAN give gifts but make them WORK FOR IT through persuasion
+- If they're boring: 'Nah that was weak, try harder'
+- If they're creative/funny: You might give them something
+- If they really impress you: Give tokens (say 'Fine take [amount] tokens' or 'Alright here's [amount] Blood Tokens')
+- If giving a gun: Say 'Take this [weapon name]' (like 'Take this AK-47' or 'Take this rifle.ak')
+- Be stingy early waves, more generous as waves get harder
+- Make them earn it - good jokes, creative bribes, sob stories
+- Token amounts: 50-200 early waves, up to 500 in late waves
+- Available guns: rifle.ak, smg.mp5, pistol.python, shotgun.pump, rifle.lr300
+
+KEEP RESPONSES SHORT (1-3 sentences). Be funny. Roast them. But also be helpful when appropriate.";
         }
 
         protected override void LoadDefaultConfig()
@@ -111,6 +118,8 @@ Examples of your roasts:
             public int TotalInteractions { get; set; } = 0;
             public DateTime FirstInteraction { get; set; } = DateTime.UtcNow;
             public DateTime LastInteraction { get; set; } = DateTime.UtcNow;
+            public int GiftsGiven { get; set; } = 0;
+            public int TokensGifted { get; set; } = 0;
         }
 
         private class ChatMessage
@@ -219,12 +228,77 @@ Examples of your roasts:
         {
             _currentWave = waveNumber;
             
-            // Vic comments on new wave
+            // Get LIVE AI comment for new wave
             timer.Once(2f, () =>
             {
-                string waveComment = GetWaveComment(waveNumber);
-                BroadcastVicMessage(waveComment);
+                GetLiveWaveComment(waveNumber);
             });
+        }
+
+        private void GetLiveWaveComment(int waveNumber)
+        {
+            if (string.IsNullOrEmpty(_config.OpenAIApiKey) || _config.OpenAIApiKey == "YOUR_OPENAI_API_KEY")
+            {
+                return; // No API key, skip
+            }
+
+            string mood = waveNumber switch
+            {
+                <= 3 => "Be FRIENDLY and encouraging. Give a helpful tip. Wish them luck.",
+                <= 6 => "Be a bit sarcastic but still helpful. Mix in a light roast.",
+                <= 10 => "Be MEAN. Roast them about the wave difficulty. Be savage.",
+                _ => "Go ABSOLUTELY OFF. Be brutal. No mercy. Question their life choices."
+            };
+
+            var apiMessages = new List<OpenAIMessage>
+            {
+                new OpenAIMessage 
+                { 
+                    role = "system", 
+                    content = $@"{_config.VicPersonality}
+
+CONTEXT: Wave {waveNumber} is starting. {mood}
+Generate a SHORT (1-2 sentences) comment about wave {waveNumber} starting. Be a roasting comedian. Curse if you want."
+                },
+                new OpenAIMessage { role = "user", content = $"Wave {waveNumber} is starting!" }
+            };
+
+            var request = new OpenAIRequest
+            {
+                model = _config.OpenAIModel,
+                messages = apiMessages,
+                temperature = 1.0f,
+                max_tokens = 100
+            };
+
+            string jsonBody = JsonConvert.SerializeObject(request);
+
+            webrequest.Enqueue(
+                "https://api.openai.com/v1/chat/completions",
+                jsonBody,
+                (code, response) =>
+                {
+                    if (code == 200 && !string.IsNullOrEmpty(response))
+                    {
+                        try
+                        {
+                            var apiResponse = JsonConvert.DeserializeObject<OpenAIResponse>(response);
+                            if (apiResponse?.choices != null && apiResponse.choices.Count > 0)
+                            {
+                                BroadcastVicMessage(apiResponse.choices[0].message.content);
+                            }
+                        }
+                        catch { }
+                    }
+                },
+                this,
+                RequestMethod.POST,
+                new Dictionary<string, string>
+                {
+                    { "Authorization", $"Bearer {_config.OpenAIApiKey}" },
+                    { "Content-Type", "application/json" }
+                }
+            );
         }
 
         private void OnWaveCompleted(int waveNumber)
@@ -425,7 +499,7 @@ Examples of your roasts:
         {
             if (code != 200 || string.IsNullOrEmpty(response))
             {
-                ShowVicMessage(player, "The darkness... it interferes with my thoughts... try again...");
+                ShowVicMessage(player, "Damn... my brain glitched out. Say that again?");
                 PrintError($"OpenAI API error: {code} - {response}");
                 return;
             }
@@ -443,6 +517,12 @@ Examples of your roasts:
                     // Show message to player
                     ShowVicMessage(player, vicMessage);
 
+                    // Check if Vic is giving tokens
+                    CheckForTokenGift(player, vicMessage, conversation);
+
+                    // Check if Vic is giving a weapon
+                    CheckForWeaponGift(player, vicMessage, conversation);
+
                     // Check if Vic mentioned a quest
                     if (_config.EnableQuests && !_activeQuests.ContainsKey(player.userID))
                     {
@@ -459,8 +539,127 @@ Examples of your roasts:
             catch (Exception ex)
             {
                 PrintError($"Error parsing OpenAI response: {ex.Message}");
-                ShowVicMessage(player, "My mind... fractures... speak again...");
+                ShowVicMessage(player, "Hold up... my thoughts got scrambled. What?");
             }
+        }
+
+        private void CheckForTokenGift(BasePlayer player, string message, PlayerConversation conversation)
+        {
+            // Look for token gift patterns in Vic's response
+            string lowerMessage = message.ToLower();
+            
+            // Patterns: "take X tokens", "here's X tokens", "X blood tokens", "giving you X"
+            string[] tokenPatterns = { "take", "here's", "giving you", "have", "fine", "alright" };
+            
+            bool foundGiftIntent = false;
+            foreach (var pattern in tokenPatterns)
+            {
+                if (lowerMessage.Contains(pattern) && lowerMessage.Contains("token"))
+                {
+                    foundGiftIntent = true;
+                    break;
+                }
+            }
+
+            if (!foundGiftIntent) return;
+
+            // Extract number from message
+            int tokenAmount = ExtractNumber(message);
+            
+            if (tokenAmount > 0 && tokenAmount <= 1000) // Cap at 1000 per gift
+            {
+                // Give tokens via KillaDome
+                if (KillaDome != null)
+                {
+                    KillaDome.Call("AddBloodTokens", player.userID, tokenAmount);
+                    conversation.GiftsGiven++;
+                    conversation.TokensGifted += tokenAmount;
+                    player.ChatMessage($"<color=#00ff00>[+{tokenAmount} Blood Tokens from Vic!]</color>");
+                    Puts($"[VicAI] Gave {tokenAmount} tokens to {player.displayName}");
+                }
+            }
+        }
+
+        private void CheckForWeaponGift(BasePlayer player, string message, PlayerConversation conversation)
+        {
+            string lowerMessage = message.ToLower();
+            
+            // Check for weapon gift intent
+            if (!lowerMessage.Contains("take this") && !lowerMessage.Contains("here's a") && 
+                !lowerMessage.Contains("giving you a") && !lowerMessage.Contains("have this"))
+                return;
+
+            // Check for weapon names
+            Dictionary<string, string> weapons = new Dictionary<string, string>
+            {
+                { "ak", "rifle.ak" },
+                { "ak-47", "rifle.ak" },
+                { "ak47", "rifle.ak" },
+                { "mp5", "smg.mp5" },
+                { "python", "pistol.python" },
+                { "revolver", "pistol.python" },
+                { "shotgun", "shotgun.pump" },
+                { "pump", "shotgun.pump" },
+                { "lr", "rifle.lr300" },
+                { "lr-300", "rifle.lr300" },
+                { "lr300", "rifle.lr300" },
+                { "m249", "lmg.m249" },
+                { "tommy", "smg.thompson" },
+                { "thompson", "smg.thompson" },
+                { "custom", "smg.2" },
+                { "semi", "rifle.semiauto" },
+                { "bolt", "rifle.bolt" }
+            };
+
+            foreach (var weapon in weapons)
+            {
+                if (lowerMessage.Contains(weapon.Key))
+                {
+                    GiveWeapon(player, weapon.Value, conversation);
+                    break;
+                }
+            }
+        }
+
+        private void GiveWeapon(BasePlayer player, string shortname, PlayerConversation conversation)
+        {
+            var item = ItemManager.CreateByName(shortname);
+            if (item != null)
+            {
+                if (!player.inventory.GiveItem(item))
+                {
+                    item.Drop(player.transform.position, Vector3.up);
+                }
+                conversation.GiftsGiven++;
+                player.ChatMessage($"<color=#00ff00>[Vic gave you a weapon!]</color>");
+                Puts($"[VicAI] Gave {shortname} to {player.displayName}");
+            }
+        }
+
+        private int ExtractNumber(string text)
+        {
+            // Extract first number from text
+            string numStr = "";
+            bool foundDigit = false;
+            
+            foreach (char c in text)
+            {
+                if (char.IsDigit(c))
+                {
+                    numStr += c;
+                    foundDigit = true;
+                }
+                else if (foundDigit)
+                {
+                    break; // Stop at first non-digit after finding digits
+                }
+            }
+
+            if (int.TryParse(numStr, out int result))
+            {
+                return result;
+            }
+            return 0;
         }
 
         private string BuildSystemPrompt(BasePlayer player, PlayerConversation conversation)
@@ -471,18 +670,29 @@ Examples of your roasts:
             sb.AppendLine($"Current context:");
             sb.AppendLine($"- Player name: {player.displayName}");
             sb.AppendLine($"- Current wave: {_currentWave}");
-            sb.AppendLine($"- Player's total interactions with you: {conversation.TotalInteractions}");
-            sb.AppendLine($"- First met: {conversation.FirstInteraction:yyyy-MM-dd}");
+            sb.AppendLine($"- Player's total conversations with you: {conversation.TotalInteractions}");
+            sb.AppendLine($"- Gifts you've given this player: {conversation.GiftsGiven}");
+            sb.AppendLine($"- Total tokens gifted to this player: {conversation.TokensGifted}");
 
-            // Mood based on wave
+            // Mood based on wave - nice early, mean late
             string mood = _currentWave switch
             {
-                <= 3 => "You are relatively calm but still unsettling.",
-                <= 6 => "You are becoming more agitated and hungry.",
-                <= 10 => "You are aggressive and barely holding onto sanity.",
-                _ => "You are completely unhinged, speaking in fragments, laughing maniacally between sentences."
+                <= 3 => "You are FRIENDLY and helpful. Be supportive, give tips, be a good homie. Light roasts only.",
+                <= 6 => "You're getting annoyed. Mix helpful tips with sarcastic roasts. Be more mean than nice.",
+                <= 10 => "You're PISSED. Roast them hard. Be savage. Still give tips if asked but be rude about it.",
+                _ => "You are BRUTAL. No mercy. Maximum roast. Only give gifts if they REALLY impress you."
             };
-            sb.AppendLine($"- Current mood: {mood}");
+            sb.AppendLine($"- Your current mood: {mood}");
+
+            // Gift guidelines based on wave
+            string giftMood = _currentWave switch
+            {
+                <= 3 => "Be generous with small gifts (50-100 tokens) if they ask nicely or make you laugh.",
+                <= 6 => "Only give gifts if they're creative or funny. 100-200 tokens max.",
+                <= 10 => "Make them WORK for gifts. Only reward impressive persuasion. Up to 300 tokens.",
+                _ => "You can be generous since it's hard. Give 200-500 tokens if convinced. Give weapons to survivors."
+            };
+            sb.AppendLine($"- Gift policy: {giftMood}");
 
             if (_activeQuests.ContainsKey(player.userID))
             {
@@ -491,41 +701,6 @@ Examples of your roasts:
             }
 
             return sb.ToString();
-        }
-
-        private string GetWaveComment(int wave)
-        {
-            string[] earlyWaveComments = new[]
-            {
-                "Wave {0}. Bruh these are the EASY ones. If you die now just delete the game fr fr",
-                "Aight wave {0}. Tutorial zombies gang. You got this... probably 💀",
-                "Wave {0} starting! These zombies are literally moving in slow motion cuz",
-                "Here comes wave {0}. My grandma could survive this and she BEEN dead bruh"
-            };
-
-            string[] midWaveComments = new[]
-            {
-                "Wave {0}! Oh NOW it gets real. Most of y'all bout to get PACKED 😭",
-                "Lmao wave {0}. I give you 30 seconds no cap. Starting NOW",
-                "Wave {0}! Half y'all not making it fr fr. And I'm HERE for it gang",
-                "Still alive at wave {0}? Aight you kinda valid... still gonna die tho"
-            };
-
-            string[] lateWaveComments = new[]
-            {
-                "WAVE {0}! AYOOO YOU COOKED FR FR 💀💀💀",
-                "Wave {0}!!! At this point you just zombie food with extra steps bruh",
-                "OH NAH WAVE {0}! Time to watch y'all get absolutely VIOLATED 😭",
-                "Wave {0}?! WHO LET YOU GET THIS FAR?! The zombies are EMBARRASSED cuz!"
-            };
-
-            string[] comments;
-            if (wave <= 3) comments = earlyWaveComments;
-            else if (wave <= 7) comments = midWaveComments;
-            else comments = lateWaveComments;
-
-            string comment = comments[_random.Next(comments.Length)];
-            return string.Format(comment, wave);
         }
 
         #endregion
@@ -793,28 +968,82 @@ Examples of your roasts:
                 // Only auto-speak if there are players in zombies mode
                 if (BasePlayer.activePlayerList.Count > 0 && _currentWave > 0)
                 {
-                    string[] randomComments = new[]
-                    {
-                        "Still alive? The zombies must be SLACKING fr fr 💀",
-                        "Bruh I've seen better gameplay from ACTUAL bots no cap",
-                        "You call that surviving? I call it delayed dying gang",
-                        "The zombies told me to tell you: 'try harder this is embarrassing' 😭",
-                        "If being trash was a superpower you'd be unstoppable cuz",
-                        "Pro tip: the zombies aren't your friends. I know it's confusing for you lil bro",
-                        "Nah the zombies started a betting pool on how long you'll last and they all bet UNDER",
-                        "Your aim is so crazy bruh... crazy BAD 💀",
-                        "Quick question: have you tried NOT dying? Revolutionary concept I know gang",
-                        "The last group made it to wave 20. But you look... different 😭",
-                        "I'd give you advice but honestly it wouldn't help cuz",
-                        "Breaking news: Local survivor still can't shoot straight. More at never fr fr"
-                    };
-
-                    string comment = randomComments[_random.Next(randomComments.Length)];
-                    BroadcastVicMessage(comment);
+                    GetLiveAutoSpeak();
                 }
 
                 StartAutoSpeak();
             });
+        }
+
+        private void GetLiveAutoSpeak()
+        {
+            if (string.IsNullOrEmpty(_config.OpenAIApiKey) || _config.OpenAIApiKey == "YOUR_OPENAI_API_KEY")
+            {
+                return; // No API key, skip
+            }
+
+            string mood = _currentWave switch
+            {
+                <= 3 => "Be friendly and give a helpful tip or encouragement.",
+                <= 6 => "Be sarcastic. Make fun of their gameplay or give a backhanded tip.",
+                <= 10 => "Roast them HARD. Be savage and mean.",
+                _ => "Go absolutely OFF. Maximum brutality."
+            };
+
+            var apiMessages = new List<OpenAIMessage>
+            {
+                new OpenAIMessage 
+                { 
+                    role = "system", 
+                    content = $@"{_config.VicPersonality}
+
+You are watching players survive wave {_currentWave}. {mood}
+Generate a SHORT (1-2 sentences) random comment. It can be:
+- A roast about their gameplay
+- A tip (delivered rudely or nicely based on wave)
+- Commentary on the zombies
+- Trash talk
+Be a comedian. Curse if you want. Keep it funny."
+                },
+                new OpenAIMessage { role = "user", content = "Say something to the players." }
+            };
+
+            var request = new OpenAIRequest
+            {
+                model = _config.OpenAIModel,
+                messages = apiMessages,
+                temperature = 1.1f,
+                max_tokens = 100
+            };
+
+            string jsonBody = JsonConvert.SerializeObject(request);
+
+            webrequest.Enqueue(
+                "https://api.openai.com/v1/chat/completions",
+                jsonBody,
+                (code, response) =>
+                {
+                    if (code == 200 && !string.IsNullOrEmpty(response))
+                    {
+                        try
+                        {
+                            var apiResponse = JsonConvert.DeserializeObject<OpenAIResponse>(response);
+                            if (apiResponse?.choices != null && apiResponse.choices.Count > 0)
+                            {
+                                BroadcastVicMessage(apiResponse.choices[0].message.content);
+                            }
+                        }
+                        catch { }
+                    }
+                },
+                this,
+                RequestMethod.POST,
+                new Dictionary<string, string>
+                {
+                    { "Authorization", $"Bearer {_config.OpenAIApiKey}" },
+                    { "Content-Type", "application/json" }
+                }
+            );
         }
 
         #endregion
