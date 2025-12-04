@@ -1934,14 +1934,7 @@ namespace Oxide.Plugins
 
             Puts($"[SimplePrefabEditor] Mystery Box {boxId} deactivated after {MysteryBoxActiveTime / 60f} minutes.");
             
-            // Broadcast despawn and respawn notification
-            foreach (var player in BasePlayer.activePlayerList)
-            {
-                if (player == null) continue;
-                player.ChatMessage($"<color=#FF8800>⚠ Mystery Box despawned!</color> A new one will appear in 30 seconds...");
-            }
-            
-            // Schedule respawn at ALL spawn points after 30 seconds
+            // Schedule respawn at ALL spawn points after 30 seconds (silently, no spam)
             timer.Once(30f, () =>
             {
                 _lastSpawnTime = Time.realtimeSinceStartup;

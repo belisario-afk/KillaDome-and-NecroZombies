@@ -1415,10 +1415,20 @@ namespace Oxide.Plugins
         }
         
         /// <summary>
-        /// Get top wave leaders for lobby display
+        /// Get top wave leaders for lobby display (with caching)
         /// </summary>
+        private List<LeaderboardEntry> _cachedLeaderboard;
+        private DateTime _lastLeaderboardCache = DateTime.MinValue;
+        private const int LEADERBOARD_CACHE_SECONDS = 60; // Cache for 1 minute
+        
         private List<LeaderboardEntry> GetTopWaveLeaders(int count)
         {
+            // Return cached leaderboard if still valid
+            if (_cachedLeaderboard != null && (DateTime.UtcNow - _lastLeaderboardCache).TotalSeconds < LEADERBOARD_CACHE_SECONDS)
+            {
+                return _cachedLeaderboard.Take(count).ToList();
+            }
+            
             var entries = new List<LeaderboardEntry>();
             
             // Get all active sessions first
@@ -1468,12 +1478,14 @@ namespace Oxide.Plugins
                 }
             }
             
-            // Sort by highest wave and return top entries
-            return entries
+            // Sort by highest wave and cache
+            _cachedLeaderboard = entries
                 .OrderByDescending(e => e.HighestWave)
                 .ThenByDescending(e => e.ZombieKills)
-                .Take(count)
                 .ToList();
+            _lastLeaderboardCache = DateTime.UtcNow;
+            
+            return _cachedLeaderboard.Take(count).ToList();
         }
         
         /// <summary>
@@ -3002,6 +3014,11 @@ namespace Oxide.Plugins
             if (targetSession == null)
             {
                 // Create session if it doesn't exist (player not fully connected yet)
+                if (_saveManager == null)
+                {
+                    SendReply(player, "Save manager not initialized. Please try again.");
+                    return;
+                }
                 var profile = _saveManager.LoadPlayerProfile(target.userID);
                 targetSession = new PlayerSession(target, profile);
                 _activeSessions[target.userID] = targetSession;
