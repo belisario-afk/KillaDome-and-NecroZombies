@@ -298,6 +298,31 @@ KEEP IT AUTHENTIC. Military professional. Not cringe. 1-3 sentences max.";
             {
                 GetLiveWaveComment(waveNumber);
             });
+            
+            // Auto-give quests to players without one on wave 1 or every 3 waves
+            if (_config.EnableQuests && (waveNumber == 1 || waveNumber % 3 == 0))
+            {
+                timer.Once(5f, () =>
+                {
+                    foreach (var player in BasePlayer.activePlayerList)
+                    {
+                        if (!_activeQuests.ContainsKey(player.userID))
+                        {
+                            GiveRandomQuest(player);
+                        }
+                    }
+                });
+            }
+            
+            // Refresh quest UI for all players with active quests
+            foreach (var kvp in _activeQuests.ToList())
+            {
+                var player = BasePlayer.FindByID(kvp.Key);
+                if (player != null)
+                {
+                    ShowQuestUI(player, kvp.Value);
+                }
+            }
         }
 
         private void GetLiveWaveComment(int waveNumber)
@@ -386,6 +411,34 @@ Generate ONE short tactical comment (1-2 sentences) about the wave starting. Mil
                     {
                         CompleteQuest(player, kvp.Value);
                     }
+                }
+            }
+        }
+
+        // Called when player joins zombies match
+        private void OnPlayerJoinedZombies(BasePlayer player)
+        {
+            if (player == null) return;
+            
+            // Give them a quest if they don't have one
+            timer.Once(3f, () =>
+            {
+                if (player != null && !_activeQuests.ContainsKey(player.userID) && _config.EnableQuests)
+                {
+                    GiveRandomQuest(player);
+                }
+            });
+        }
+
+        // Refresh quest UI periodically for all players with quests
+        private void RefreshAllQuestUIs()
+        {
+            foreach (var kvp in _activeQuests.ToList())
+            {
+                var player = BasePlayer.FindByID(kvp.Key);
+                if (player != null && player.IsConnected)
+                {
+                    ShowQuestUI(player, kvp.Value);
                 }
             }
         }
@@ -1218,52 +1271,61 @@ Generate ONE short tactical comment (1-2 sentences) about the wave starting. Mil
 
             var container = new CuiElementContainer();
 
-            // Quest panel (smaller, bottom right)
+            // Quest panel (more visible - top right, larger)
             container.Add(new CuiPanel
             {
-                Image = { Color = "0.1 0.12 0.1 0.85" },
-                RectTransform = { AnchorMin = "0.75 0.15", AnchorMax = "0.99 0.25" }
+                Image = { Color = "0.1 0.12 0.1 0.92" },
+                RectTransform = { AnchorMin = "0.73 0.78", AnchorMax = "0.99 0.92" }
             }, "Overlay", PriceQuestUIName);
 
-            // Quest title
+            // Border/accent
+            container.Add(new CuiPanel
+            {
+                Image = { Color = "0.3 0.35 0.2 1" },
+                RectTransform = { AnchorMin = "0", AnchorMax = "0.01 1" }
+            }, PriceQuestUIName);
+
+            // Quest title with icon
             container.Add(new CuiLabel
             {
-                Text = { Text = "☠ MISSION OBJECTIVE", FontSize = 10, Align = TextAnchor.MiddleLeft, Color = "0.8 0.7 0.3 1" },
-                RectTransform = { AnchorMin = "0.02 0.7", AnchorMax = "0.98 0.95" }
+                Text = { Text = "☠ MISSION OBJECTIVE", FontSize = 14, Align = TextAnchor.MiddleLeft, Color = "0.8 0.7 0.3 1" },
+                RectTransform = { AnchorMin = "0.03 0.7", AnchorMax = "0.7 0.98" }
             }, PriceQuestUIName);
 
             // Quest description
             container.Add(new CuiLabel
             {
-                Text = { Text = quest.Description, FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "0.9 0.9 0.9 1" },
-                RectTransform = { AnchorMin = "0.02 0.35", AnchorMax = "0.98 0.7" }
+                Text = { Text = quest.Description, FontSize = 13, Align = TextAnchor.MiddleLeft, Color = "0.95 0.95 0.95 1" },
+                RectTransform = { AnchorMin = "0.03 0.35", AnchorMax = "0.97 0.68" }
             }, PriceQuestUIName);
 
-            // Progress
+            // Progress background
             float progress = (float)quest.CurrentCount / quest.TargetCount;
             container.Add(new CuiPanel
             {
-                Image = { Color = "0.2 0.2 0.2 1" },
-                RectTransform = { AnchorMin = "0.02 0.1", AnchorMax = "0.7 0.3" }
+                Image = { Color = "0.15 0.15 0.15 1" },
+                RectTransform = { AnchorMin = "0.03 0.08", AnchorMax = "0.65 0.28" }
             }, PriceQuestUIName, "QuestProgressBg");
 
+            // Progress fill
             container.Add(new CuiPanel
             {
-                Image = { Color = "0.3 0.35 0.2 1" },
+                Image = { Color = "0.4 0.45 0.25 1" },
                 RectTransform = { AnchorMin = "0", AnchorMax = $"{progress} 1" }
             }, "QuestProgressBg");
 
+            // Progress text
             container.Add(new CuiLabel
             {
-                Text = { Text = $"{quest.CurrentCount}/{quest.TargetCount}", FontSize = 10, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
+                Text = { Text = $"{quest.CurrentCount}/{quest.TargetCount}", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
                 RectTransform = { AnchorMin = "0", AnchorMax = "1 1" }
             }, "QuestProgressBg");
 
-            // Reward
+            // Reward amount (visible gold color)
             container.Add(new CuiLabel
             {
-                Text = { Text = $"+{quest.RewardTokens}", FontSize = 12, Align = TextAnchor.MiddleRight, Color = "0.8 0.7 0.3 1" },
-                RectTransform = { AnchorMin = "0.72 0.1", AnchorMax = "0.98 0.3" }
+                Text = { Text = $"+{quest.RewardTokens} TOKENS", FontSize = 13, Align = TextAnchor.MiddleRight, Color = "1 0.85 0.3 1" },
+                RectTransform = { AnchorMin = "0.68 0.08", AnchorMax = "0.97 0.28" }
             }, PriceQuestUIName);
 
             CuiHelper.AddUi(player, container);
