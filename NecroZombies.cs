@@ -291,11 +291,12 @@ namespace Oxide.Plugins
         private const string BloodSlashEffect = "assets/bundled/prefabs/fx/impacts/slash/blood14slash.prefab";
         // Blood splatter decal for hellhound red appearance
         private const string BloodSplatterDecal = "assets/bundled/prefabs/fx/decals/blood/decal_blood_splatter_01.prefab";
-        // Disabled flies effects - they cause server lag when running continuously
-        // private const string FliesMediumEffect = "assets/bundled/prefabs/fx/animals/flies/flies_medium.prefab";
-        // private const string FliesLoopEffect = "assets/bundled/prefabs/fx/animals/flies/flies_looping.prefab";
         private const string EatCeleryEffect = "assets/bundled/prefabs/fx/gestures/eat_celery.prefab";
         private const string DrinkVomitEffect = "assets/bundled/prefabs/fx/gestures/drink_vomit.prefab";
+        
+        // Attack effects
+        private const string MeleeHitEffect = "assets/bundled/prefabs/fx/player/beartrap_blood.prefab";
+        private const string SwingEffect = "assets/bundled/prefabs/fx/weapons/machete/slash.prefab";
 
         // CUI IDs
         private const string WaveBannerPanel = "NecroWaveBanner.Panel";
@@ -323,13 +324,29 @@ namespace Oxide.Plugins
 
         private Timer _waveSpawnTimer;
         private Timer _waveCheckTimer;
-        private Timer _hopTimer;
+        private Timer _zombieAITimer;  // Main zombie AI tick - movement, attacks, targeting
         private Timer _hellhoundTimer;
         private Timer _waveHudTimer;
         private Timer _bruteTimer;
-        private Timer _zombieTargetTimer;  // Keep zombies focused on players
 
         private bool _loggedTypeOnce;
+        
+        // Track zombie attack cooldowns and states
+        private Dictionary<uint, float> _zombieAttackCooldowns = new Dictionary<uint, float>();
+        private Dictionary<uint, float> _zombieLungeTimers = new Dictionary<uint, float>();
+        private Dictionary<uint, ZombieBehaviorState> _zombieStates = new Dictionary<uint, ZombieBehaviorState>();
+        
+        private class ZombieBehaviorState
+        {
+            public float BaseSpeed;
+            public float CurrentSpeed;
+            public bool IsLunging;
+            public float LungeEndTime;
+            public float NextAttackTime;
+            public float LastTargetUpdateTime;
+            public Vector3 LastKnownTargetPos;
+            public ulong TargetPlayerId;
+        }
 
         #endregion
 
@@ -339,25 +356,23 @@ namespace Oxide.Plugins
         {
             Puts($"[NecroZombies] Using scarecrow prefab: {ScarecrowPrefab}");
             Puts($"[NecroZombies] Using zombie prefab: {ZombiePrefab}");
-            _hopTimer = timer.Every(1f, HopTick);
+            
+            // Main zombie AI tick - handles movement, targeting, attacks, lunges
+            _zombieAITimer = timer.Every(0.15f, ZombieAITick);  // ~7 times per second for smooth movement
             _hellhoundTimer = timer.Every(0.5f, HellhoundTick);
             _bruteTimer = timer.Every(0.3f, BruteTick);  // Check brute proximity every 0.3s
-            _zombieTargetTimer = timer.Every(0.5f, ZombieTargetTick);  // Keep zombies focused on players - run frequently like hellhounds
         }
 
         private void Unload()
         {
-            _hopTimer?.Destroy();
-            _hopTimer = null;
+            _zombieAITimer?.Destroy();
+            _zombieAITimer = null;
             
             _hellhoundTimer?.Destroy();
             _hellhoundTimer = null;
             
             _bruteTimer?.Destroy();
             _bruteTimer = null;
-            
-            _zombieTargetTimer?.Destroy();
-            _zombieTargetTimer = null;
             
             _waveHudTimer?.Destroy();
             _waveHudTimer = null;
@@ -367,6 +382,10 @@ namespace Oxide.Plugins
 
             _waveCheckTimer?.Destroy();
             _waveCheckTimer = null;
+            
+            _zombieAttackCooldowns.Clear();
+            _zombieLungeTimers.Clear();
+            _zombieStates.Clear();
 
             DestroyWaveBannerForAll();
             DestroyWaveHudForAll();
@@ -975,97 +994,234 @@ namespace Oxide.Plugins
             _activeZombies.Clear();
             _currentWaveZombies.Clear();
             _hellhoundsOnFire.Clear();
+            _zombieStates.Clear();
             _currentWaveSpawned = 0;
             _currentWaveTotalToSpawn = 0;
             return count;
         }
 
-        private void HopTick()
+        /// <summary>
+        /// Main Zombie AI tick - handles all zombie behavior like Black Ops zombies
+        /// - Continuous NavAgent movement toward players (no teleport hops)
+        /// - Speed variations (walkers shuffle, runners sprint)
+        /// - Lunge attacks when close to player
+        /// - Melee damage when in attack range
+        /// - Gore VFX on attacks
+        /// </summary>
+        private void ZombieAITick()
         {
             if (_activeZombies.Count == 0)
                 return;
 
             float now = Time.realtimeSinceStartup;
+            var toRemove = new List<BaseEntity>();
 
-            const float hopCooldown = 4f;
-            const float maxLungeDistance = 8f;
-            const float hopHeight = 0.6f;
-            const float playerSearchRange = 30f;
-            const float minFlatDistance = 4f;
-
-            var snapshot = new List<BaseEntity>(_activeZombies);
-            foreach (var be in snapshot)
+            foreach (var be in _activeZombies)
             {
                 if (be == null || be.IsDestroyed)
+                {
+                    toRemove.Add(be);
+                    continue;
+                }
+
+                // Skip hellhounds - they have their own tick
+                if (_hellhoundsOnFire.Contains(be))
                     continue;
 
                 var npc = be as NPCPlayer;
                 if (npc == null)
                     continue;
 
-                Vector3 npcPos = npc.transform.position;
-
-                BasePlayer target = null;
-                float bestDist = float.MaxValue;
-
-                foreach (var player in BasePlayer.activePlayerList)
+                uint uid = npc.net != null ? (uint)(npc.net.ID.Value & 0xFFFFFFFF) : 0u;
+                
+                // Get or create behavior state for this zombie
+                if (!_zombieStates.TryGetValue(uid, out var state))
                 {
-                    if (player == null || player.IsDead() || player.IsSleeping())
-                        continue;
-
-                    float dist = Vector3.Distance(player.transform.position, npcPos);
-                    if (dist < bestDist && dist <= playerSearchRange)
+                    float baseSpeed = npc.NavAgent != null ? npc.NavAgent.speed : 6.5f;
+                    state = new ZombieBehaviorState
                     {
-                        bestDist = dist;
-                        target = player;
-                    }
+                        BaseSpeed = baseSpeed,
+                        CurrentSpeed = baseSpeed,
+                        IsLunging = false,
+                        LungeEndTime = 0f,
+                        NextAttackTime = now + UnityEngine.Random.Range(0.5f, 1.5f),
+                        LastTargetUpdateTime = 0f,
+                        LastKnownTargetPos = Vector3.zero,
+                        TargetPlayerId = 0
+                    };
+                    _zombieStates[uid] = state;
                 }
 
+                Vector3 npcPos = npc.transform.position;
+
+                // Find nearest player (search whole map)
+                BasePlayer target = FindNearestPlayer(npcPos, 500f);
                 if (target == null)
                     continue;
 
-                if (bestDist < minFlatDistance)
-                {
-                    if (!string.IsNullOrEmpty(EatCeleryEffect) && UnityEngine.Random.Range(0f, 1f) < 0.2f)
-                    {
-                        Effect.server.Run(EatCeleryEffect, npcPos + Vector3.up * 1.4f, Vector3.up, null);
-                    }
+                float distToTarget = Vector3.Distance(target.transform.position, npcPos);
+                Vector3 targetPos = target.transform.position;
+                
+                // Store target info
+                state.LastKnownTargetPos = targetPos;
+                state.TargetPlayerId = target.userID;
 
-                    if (!string.IsNullOrEmpty(DrinkVomitEffect) && UnityEngine.Random.Range(0f, 1f) < 0.05f)
+                // === ATTACK LOGIC ===
+                // Attack range ~1.8m (melee reach)
+                const float attackRange = 2.0f;
+                const float attackDamage = 20f;
+                const float attackCooldown = 1.2f;
+
+                if (distToTarget <= attackRange && now >= state.NextAttackTime)
+                {
+                    // ATTACK! Deal damage to player
+                    PerformZombieAttack(npc, target, attackDamage);
+                    state.NextAttackTime = now + attackCooldown;
+                    
+                    // Short pause after attack
+                    if (npc.NavAgent != null && npc.NavAgent.isOnNavMesh)
+                    {
+                        npc.NavAgent.isStopped = true;
+                    }
+                    
+                    // Resume movement after brief pause
+                    timer.Once(0.3f, () =>
+                    {
+                        if (npc != null && !npc.IsDestroyed && npc.NavAgent != null && npc.NavAgent.isOnNavMesh)
+                        {
+                            npc.NavAgent.isStopped = false;
+                        }
+                    });
+                    
+                    continue;  // Skip movement this tick
+                }
+
+                // === LUNGE LOGIC ===
+                // When getting close (4-8m), zombies do a speed burst
+                const float lungeStartDist = 8f;
+                const float lungeEndDist = 3f;
+                const float lungeDuration = 1.0f;
+                const float lungeSpeedMultiplier = 1.8f;
+
+                if (!state.IsLunging && distToTarget <= lungeStartDist && distToTarget > lungeEndDist)
+                {
+                    // Random chance to start a lunge (30% per tick when in range)
+                    if (UnityEngine.Random.Range(0f, 1f) < 0.05f)
+                    {
+                        state.IsLunging = true;
+                        state.LungeEndTime = now + lungeDuration;
+                        state.CurrentSpeed = state.BaseSpeed * lungeSpeedMultiplier;
+                        
+                        // Lunge grunt/sound effect
+                        if (!string.IsNullOrEmpty(EatCeleryEffect) && UnityEngine.Random.Range(0f, 1f) < 0.3f)
+                        {
+                            Effect.server.Run(EatCeleryEffect, npcPos + Vector3.up * 1.4f, Vector3.up, null);
+                        }
+                    }
+                }
+
+                // Check if lunge should end
+                if (state.IsLunging && (now >= state.LungeEndTime || distToTarget <= lungeEndDist))
+                {
+                    state.IsLunging = false;
+                    state.CurrentSpeed = state.BaseSpeed;
+                }
+
+                // === MOVEMENT LOGIC ===
+                if (npc.NavAgent != null)
+                {
+                    // Set speed based on current state
+                    npc.NavAgent.speed = state.CurrentSpeed;
+                    npc.NavAgent.acceleration = state.CurrentSpeed * 4f;  // Quick acceleration
+                    npc.NavAgent.angularSpeed = 360f;  // Fast turning
+                    
+                    if (npc.NavAgent.isOnNavMesh)
+                    {
+                        // Update destination every 0.3s or if target moved significantly
+                        float timeSinceUpdate = now - state.LastTargetUpdateTime;
+                        float targetMoved = Vector3.Distance(targetPos, state.LastKnownTargetPos);
+                        
+                        if (timeSinceUpdate > 0.3f || targetMoved > 2f)
+                        {
+                            npc.NavAgent.SetDestination(targetPos);
+                            npc.NavAgent.isStopped = false;
+                            state.LastTargetUpdateTime = now;
+                            state.LastKnownTargetPos = targetPos;
+                        }
+                    }
+                    else
+                    {
+                        // Try to warp to navmesh if not on it
+                        UnityEngine.AI.NavMeshHit hit;
+                        if (UnityEngine.AI.NavMesh.SamplePosition(npcPos, out hit, 10f, -1))
+                        {
+                            npc.NavAgent.Warp(hit.position);
+                            if (npc.NavAgent.isOnNavMesh)
+                            {
+                                npc.NavAgent.SetDestination(targetPos);
+                                npc.NavAgent.isStopped = false;
+                            }
+                        }
+                    }
+                }
+
+                // Set last attacker to trigger aggression AI
+                npc.lastAttacker = target;
+                npc.lastDealtDamageTime = Time.time;
+
+                // === AMBIENT SOUNDS/EFFECTS ===
+                // Random zombie groans when close
+                if (distToTarget < 15f && UnityEngine.Random.Range(0f, 1f) < 0.005f)
+                {
+                    if (!string.IsNullOrEmpty(DrinkVomitEffect))
                     {
                         Effect.server.Run(DrinkVomitEffect, npcPos + Vector3.up * 1.4f, Vector3.up, null);
                     }
-
-                    continue;
                 }
+            }
 
-                uint uid = npc.net != null ? (uint)(npc.net.ID.Value & 0xFFFFFFFF) : 0u;
-                int bucket = (int)(now + uid) % (int)hopCooldown;
-                if (bucket != 0)
-                    continue;
-
-                Vector3 to = target.transform.position;
-                Vector3 dir = (to - npcPos);
-                dir.y = 0f;
-                float distFlat = dir.magnitude;
-                if (distFlat < 0.1f)
-                    continue;
-
-                dir /= distFlat;
-
-                float lungeDist = Mathf.Min(maxLungeDistance, distFlat * 0.75f);
-                Vector3 candidate = npcPos + dir * lungeDist + Vector3.up * hopHeight;
-
-                RaycastHit hit;
-                if (Physics.Raycast(candidate + Vector3.up * 2f, Vector3.down, out hit, 10f,
-                    Layers.Mask.World | Layers.Mask.Terrain))
+            // Cleanup dead zombies
+            foreach (var entity in toRemove)
+            {
+                _activeZombies.Remove(entity);
+                if (entity != null)
                 {
-                    candidate = hit.point + Vector3.up * 0.1f;
+                    uint uid = entity.net != null ? (uint)(entity.net.ID.Value & 0xFFFFFFFF) : 0u;
+                    _zombieStates.Remove(uid);
                 }
+            }
+        }
 
-                npc.MovePosition(candidate);
-                npc.TransformChanged();
-                npc.SendNetworkUpdateImmediate();
+        /// <summary>
+        /// Perform zombie melee attack on player with damage and VFX
+        /// </summary>
+        private void PerformZombieAttack(NPCPlayer zombie, BasePlayer target, float damage)
+        {
+            if (zombie == null || target == null || target.IsDead())
+                return;
+
+            // Deal damage
+            target.Hurt(damage, Rust.DamageType.Slash, zombie, true);
+
+            Vector3 hitPos = target.transform.position + Vector3.up * 1.0f;
+
+            // Blood slash effect
+            if (!string.IsNullOrEmpty(BloodSlashEffect))
+            {
+                Effect.server.Run(BloodSlashEffect, hitPos, Vector3.up, null);
+            }
+            
+            // Additional blood effect
+            if (!string.IsNullOrEmpty(MeleeHitEffect) && UnityEngine.Random.Range(0f, 1f) < 0.5f)
+            {
+                Effect.server.Run(MeleeHitEffect, hitPos, Vector3.up, null);
+            }
+            
+            // Swing effect from zombie
+            if (!string.IsNullOrEmpty(SwingEffect))
+            {
+                Vector3 zombiePos = zombie.transform.position + Vector3.up * 1.2f;
+                Effect.server.Run(SwingEffect, zombiePos, (target.transform.position - zombie.transform.position).normalized, null);
             }
         }
         
@@ -1143,94 +1299,6 @@ namespace Oxide.Plugins
             foreach (var entity in toRemove)
             {
                 _hellhoundsOnFire.Remove(entity);
-            }
-        }
-        
-        /// <summary>
-        /// Keep ALL zombies (scarecrows) focused on nearest player - never lose target, never freeze
-        /// </summary>
-        private void ZombieTargetTick()
-        {
-            if (_activeZombies.Count == 0)
-                return;
-            
-            var toRemove = new List<BaseEntity>();
-            
-            foreach (var entity in _activeZombies)
-            {
-                if (entity == null || entity.IsDestroyed)
-                {
-                    toRemove.Add(entity);
-                    continue;
-                }
-                
-                // Skip hellhounds - they have their own tick
-                if (_hellhoundsOnFire.Contains(entity))
-                    continue;
-                
-                // Find nearest player on the map - search 500m (whole map)
-                var nearestPlayer = FindNearestPlayer(entity.transform.position, 500f);
-                if (nearestPlayer == null)
-                    continue;
-                
-                // Handle as NPCPlayer (scarecrow zombies)
-                var npc = entity as NPCPlayer;
-                if (npc != null)
-                {
-                    // Set last attacker - this tells the AI who damaged us and triggers aggression
-                    npc.lastAttacker = nearestPlayer;
-                    npc.lastDealtDamageTime = Time.time;
-                    
-                    // Keep NavAgent moving toward player - NEVER stop
-                    if (npc.NavAgent != null)
-                    {
-                        if (npc.NavAgent.isOnNavMesh)
-                        {
-                            npc.NavAgent.SetDestination(nearestPlayer.transform.position);
-                            npc.NavAgent.isStopped = false;
-                            npc.NavAgent.speed = 6.5f;  // Ensure speed is set
-                        }
-                        else
-                        {
-                            // Try to warp to navmesh if not on it
-                            UnityEngine.AI.NavMeshHit hit;
-                            if (UnityEngine.AI.NavMesh.SamplePosition(npc.transform.position, out hit, 10f, -1))
-                            {
-                                npc.NavAgent.Warp(hit.position);
-                                // Only set destination if warp succeeded
-                                if (npc.NavAgent.isOnNavMesh)
-                                {
-                                    npc.NavAgent.SetDestination(nearestPlayer.transform.position);
-                                    npc.NavAgent.isStopped = false;
-                                }
-                            }
-                        }
-                    }
-                    
-                    continue;
-                }
-                
-                // Handle as BaseNpc (wolves or other animals)
-                var baseNpc = entity as BaseNpc;
-                if (baseNpc != null)
-                {
-                    // Force aggression facts
-                    baseNpc.SetFact(BaseNpc.Facts.IsAggro, 1);
-                    baseNpc.SetFact(BaseNpc.Facts.HasEnemy, 1);
-                    baseNpc.SetFact(BaseNpc.Facts.IsAfraid, 0);
-                    
-                    baseNpc.AttackTarget = nearestPlayer;
-                    
-                    if (baseNpc.NavAgent != null && baseNpc.NavAgent.isOnNavMesh)
-                    {
-                        baseNpc.NavAgent.SetDestination(nearestPlayer.transform.position);
-                    }
-                }
-            }
-            
-            foreach (var entity in toRemove)
-            {
-                _activeZombies.Remove(entity);
             }
         }
         
