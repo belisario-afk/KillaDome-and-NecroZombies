@@ -954,25 +954,27 @@ namespace Oxide.Plugins
             // Check if player is in a game mode
             if (_gameModeSystem != null)
             {
+                var session = GetSession(player.userID);
                 var mode = _gameModeSystem.GetPlayerMode(player.userID);
                 
                 if (mode == GameMode.Zombies)
                 {
+                    // If buying life, spawn at arena instead of spectate
+                    if (session != null && session.IsBuyingLife)
+                    {
+                        session.IsBuyingLife = false; // Reset flag
+                        if (_config.ZombiesArenaPosition != Vector3.zero)
+                        {
+                            spawnPoint.pos = _config.ZombiesArenaPosition;
+                            spawnPoint.rot = Quaternion.identity;
+                            return spawnPoint;
+                        }
+                    }
+                    
                     // Zombies mode: spawn at spectate position
                     if (_config.SpectatePosition != Vector3.zero)
                     {
                         spawnPoint.pos = _config.SpectatePosition;
-                        spawnPoint.rot = Quaternion.identity;
-                        return spawnPoint;
-                    }
-                }
-                else if (mode == GameMode.Normal)
-                {
-                    // Normal mode: respawn in arena
-                    if (_config.ArenaSpawnPositions != null && _config.ArenaSpawnPositions.Count > 0)
-                    {
-                        var spawnPos = _config.ArenaSpawnPositions[UnityEngine.Random.Range(0, _config.ArenaSpawnPositions.Count)];
-                        spawnPoint.pos = spawnPos;
                         spawnPoint.rot = Quaternion.identity;
                         return spawnPoint;
                     }
@@ -2829,11 +2831,14 @@ namespace Oxide.Plugins
                 return;
             }
             
+            // Get or create session for target player
             var targetSession = GetSession(target.userID);
             if (targetSession == null)
             {
-                SendReply(player, $"Target player has no session.");
-                return;
+                // Create session if it doesn't exist (player not fully connected yet)
+                var profile = _saveManager.LoadPlayerProfile(target.userID);
+                targetSession = new PlayerSession(target, profile);
+                _activeSessions[target.userID] = targetSession;
             }
             
             _tokenEconomy.AwardTokens(target.userID, amount);
@@ -2976,6 +2981,7 @@ namespace Oxide.Plugins
             public bool IsSpectating { get; set; } // True if player is spectating (zombies mode waiting for respawn)
             public bool CanLeaveMatch { get; set; } // Whether player can leave (false during match)
             public DateTime LastTeleporterEntry { get; set; } // Prevent spam entry
+            public bool IsBuyingLife { get; set; } // Flag to bypass spectate spawn when buying life
             
             internal PlayerSession(BasePlayer player, PlayerProfile profile)
             {
@@ -2992,6 +2998,7 @@ namespace Oxide.Plugins
                 SelectedGameMode = GameMode.None; // Not in any game mode
                 IsSpectating = false;
                 CanLeaveMatch = true;
+                IsBuyingLife = false;
             }
         }
         
@@ -3264,11 +3271,11 @@ namespace Oxide.Plugins
                     RectTransform = { AnchorMin = "0 0.88", AnchorMax = "1 0.94" }
                 }, UI_MAIN, "TabBar");
                 
+                // Removed PLAY tab - only show WELCOME, LOADOUTS, STORE, STATS
                 AddTabButtonFullscreen(container, "TabBar", "WELCOME", 0, tab == "welcome", "killadome.tab welcome");
-                AddTabButtonFullscreen(container, "TabBar", "PLAY", 1, tab == "play", "killadome.tab play");
-                AddTabButtonFullscreen(container, "TabBar", "LOADOUTS", 2, tab == "loadouts", "killadome.tab loadouts");
-                AddTabButtonFullscreen(container, "TabBar", "STORE", 3, tab == "store", "killadome.tab store");
-                AddTabButtonFullscreen(container, "TabBar", "STATS", 4, tab == "stats", "killadome.tab stats");
+                AddTabButtonFullscreen(container, "TabBar", "LOADOUTS", 1, tab == "loadouts", "killadome.tab loadouts");
+                AddTabButtonFullscreen(container, "TabBar", "STORE", 2, tab == "store", "killadome.tab store");
+                AddTabButtonFullscreen(container, "TabBar", "STATS", 3, tab == "stats", "killadome.tab stats");
                 
                 // Close button - top right corner
                 container.Add(new CuiButton
@@ -3290,9 +3297,6 @@ namespace Oxide.Plugins
                 {
                     case "welcome":
                         ShowWelcomeTab(container, player);
-                        break;
-                    case "play":
-                        ShowPlayTab(container, player);
                         break;
                     case "loadouts":
                         ShowLoadoutsTab(container, player);
@@ -3425,7 +3429,7 @@ namespace Oxide.Plugins
                     RectTransform = { AnchorMin = "0.05 0.05", AnchorMax = "0.95 0.82" }
                 }, "LoadoutsCol");
                 
-                // Column 3: PLAY
+                // Column 3: PLAY (Zombies only)
                 float col3X = col2X + colWidth + colSpacing;
                 container.Add(new CuiPanel
                 {
@@ -3435,13 +3439,13 @@ namespace Oxide.Plugins
                 
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = "⚔️ PLAY", FontSize = 20, Align = TextAnchor.MiddleCenter, Color = "0.9 0.3 0.3 1" },
+                    Text = { Text = "⚔️ ZOMBIES", FontSize = 20, Align = TextAnchor.MiddleCenter, Color = "0.9 0.3 0.3 1" },
                     RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
                 }, "PlayCol");
                 
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = "Join a game!\n\n<color=#FF4444>RED ORB</color>\nZombies Mode\n\n<color=#44FF44>GREEN ORB</color>\nNormal PvP", FontSize = 13, Align = TextAnchor.UpperCenter, Color = "1 1 1 0.9" },
+                    Text = { Text = "Join the fight!\n\n<color=#FF4444>RED ORB</color>\nStep into the orb\nto join Zombies Mode\n\n🧟 Survive the waves!", FontSize = 13, Align = TextAnchor.UpperCenter, Color = "1 1 1 0.9" },
                     RectTransform = { AnchorMin = "0.05 0.05", AnchorMax = "0.95 0.82" }
                 }, "PlayCol");
                 
@@ -3460,7 +3464,7 @@ namespace Oxide.Plugins
                 
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = "1️⃣ Use the STORE tab to buy guns, skins & armor\n2️⃣ Use the LOADOUTS tab to equip your weapons\n3️⃣ Walk into the RED or GREEN teleporter orb in the lobby\n4️⃣ Kill zombies to earn more Blood Tokens! 🩸", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 1 1 0.9" },
+                    Text = { Text = "1️⃣ Use the STORE tab to buy guns, skins & armor\n2️⃣ Use the LOADOUTS tab to equip your weapons\n3️⃣ Walk into the RED teleporter orb in the lobby to join Zombies Mode\n4️⃣ Kill zombies to earn more Blood Tokens! 🩸", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 1 1 0.9" },
                     RectTransform = { AnchorMin = "0.05 0.10", AnchorMax = "0.95 0.78" }
                 }, "GameFlow");
                 
@@ -3474,107 +3478,8 @@ namespace Oxide.Plugins
             
             private void ShowPlayTab(CuiElementContainer container, BasePlayer player)
             {
-                // Main play section header
-                container.Add(new CuiPanel
-                {
-                    Image = { Color = "0.08 0.08 0.12 0.9" },
-                    RectTransform = { AnchorMin = "0.02 0.85", AnchorMax = "0.98 0.98" }
-                }, UI_TAB_CONTAINER, "PlayHeader");
-                
-                container.Add(new CuiLabel
-                {
-                    Text = { Text = "━━━ READY FOR BATTLE? ━━━", FontSize = 32, Align = TextAnchor.MiddleCenter, Color = "1 0.7 0.2 1" },
-                    RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" }
-                }, "PlayHeader");
-                
-                // Main content area
-                container.Add(new CuiPanel
-                {
-                    Image = { Color = "0.06 0.06 0.08 0.9" },
-                    RectTransform = { AnchorMin = "0.15 0.25", AnchorMax = "0.85 0.80" }
-                }, UI_TAB_CONTAINER, "PlayContent");
-                
-                // Decorative border
-                container.Add(new CuiPanel
-                {
-                    Image = { Color = "0.3 0.8 0.4 0.5" },
-                    RectTransform = { AnchorMin = "0 0.98", AnchorMax = "1 1" }
-                }, "PlayContent");
-                
-                container.Add(new CuiPanel
-                {
-                    Image = { Color = "0.3 0.8 0.4 0.5" },
-                    RectTransform = { AnchorMin = "0 0", AnchorMax = "1 0.02" }
-                }, "PlayContent");
-                
-                // Teleporter instruction panel (replaces queue button)
-                container.Add(new CuiPanel
-                {
-                    Image = { Color = "0.15 0.12 0.08 0.95" },
-                    RectTransform = { AnchorMin = "0.15 0.50", AnchorMax = "0.85 0.85" }
-                }, "PlayContent", "TeleporterInfo");
-                
-                container.Add(new CuiLabel
-                {
-                    Text = { Text = "⚔ USE LOBBY TELEPORTERS ⚔", FontSize = 22, Align = TextAnchor.MiddleCenter, Color = "1 0.9 0.3 1" },
-                    RectTransform = { AnchorMin = "0 0.70", AnchorMax = "1 0.95" }
-                }, "TeleporterInfo");
-                
-                container.Add(new CuiLabel
-                {
-                    Text = { Text = "<color=#FF4444>RED TILES</color> = Zombies Mode\n<color=#4488FF>BLUE TILES</color> = Normal PvP", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 1 1 0.9" },
-                    RectTransform = { AnchorMin = "0 0.25", AnchorMax = "1 0.65" }
-                }, "TeleporterInfo");
-                
-                container.Add(new CuiLabel
-                {
-                    Text = { Text = "Walk into a teleporter to join!", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
-                    RectTransform = { AnchorMin = "0 0.05", AnchorMax = "1 0.25" }
-                }, "TeleporterInfo");
-                
-                // Stats preview
-                var session = _plugin.GetSession(player.userID);
-                if (session != null)
-                {
-                    // Stats panel
-                    container.Add(new CuiPanel
-                    {
-                        Image = { Color = "0.1 0.08 0.05 0.9" },
-                        RectTransform = { AnchorMin = "0.25 0.08", AnchorMax = "0.75 0.32" }
-                    }, "PlayContent", "StatsPreview");
-                    
-                    container.Add(new CuiLabel
-                    {
-                        Text = { Text = "◆ YOUR STATS ◆", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 0.8 0.2 1" },
-                        RectTransform = { AnchorMin = "0 0.70", AnchorMax = "1 0.95" }
-                    }, "StatsPreview");
-                    
-                    container.Add(new CuiLabel
-                    {
-                        Text = { Text = $"Blood Tokens: {session.Profile.Tokens}", FontSize = 18, Align = TextAnchor.MiddleCenter, Color = "1 0.9 0.6 1" },
-                        RectTransform = { AnchorMin = "0 0.40", AnchorMax = "1 0.65" }
-                    }, "StatsPreview");
-                    
-                    float kd = session.Profile.TotalDeaths > 0 ? (float)session.Profile.TotalKills / session.Profile.TotalDeaths : session.Profile.TotalKills;
-                    container.Add(new CuiLabel
-                    {
-                        Text = { Text = $"K/D: {kd:F2}  |  Kills: {session.Profile.TotalKills}  |  Deaths: {session.Profile.TotalDeaths}", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.8 0.8 0.8 1" },
-                        RectTransform = { AnchorMin = "0 0.10", AnchorMax = "1 0.35" }
-                    }, "StatsPreview");
-                }
-                
-                // Footer with tips
-                container.Add(new CuiPanel
-                {
-                    Image = { Color = "0.06 0.06 0.08 0.8" },
-                    RectTransform = { AnchorMin = "0.02 0.02", AnchorMax = "0.98 0.10" }
-                }, UI_TAB_CONTAINER, "PlayFooter");
-                
-                container.Add(new CuiLabel
-                {
-                    Text = { Text = "💡 TIP: Customize your loadout in the LOADOUTS tab before entering battle!", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.8 0.9 1" },
-                    RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" }
-                }, "PlayFooter");
+                // Redirect to Welcome tab since PLAY tab is removed
+                ShowWelcomeTab(container, player);
             }
             
             private void ShowLoadoutsTab(CuiElementContainer container, BasePlayer player)
@@ -6276,13 +6181,10 @@ namespace Oxide.Plugins
                 // Cleanup old tiles first
                 CleanupTeleporterTiles();
                 
-                // Spawn zombies teleporter sphere (red)
+                // Spawn zombies teleporter sphere (red) - Only zombies mode now
                 SpawnTeleporterSphere(_config.ZombiesTeleporterPosition, SPHERE_RED);
                 
-                // Spawn normal teleporter sphere (green)
-                SpawnTeleporterSphere(_config.NormalTeleporterPosition, SPHERE_GREEN);
-                
-                _plugin.LogDebug($"Spawned teleporter spheres at Zombies: {_config.ZombiesTeleporterPosition} and Normal: {_config.NormalTeleporterPosition}");
+                _plugin.LogDebug($"Spawned teleporter sphere at Zombies: {_config.ZombiesTeleporterPosition}");
             }
             
             /// <summary>
@@ -6346,12 +6248,9 @@ namespace Oxide.Plugins
             public GameMode GetTeleporterZone(Vector3 position)
             {
                 float zombiesDist = Vector3.Distance(position, _config.ZombiesTeleporterPosition);
-                float normalDist = Vector3.Distance(position, _config.NormalTeleporterPosition);
                 
                 if (zombiesDist <= _config.TeleporterRadius)
                     return GameMode.Zombies;
-                if (normalDist <= _config.TeleporterRadius)
-                    return GameMode.Normal;
                     
                 return GameMode.None;
             }
@@ -7247,9 +7146,12 @@ namespace Oxide.Plugins
                     _allDeadTimer = null;
                 }
                 
-                // Teleport to arena and respawn
-                _plugin.TeleportPlayer(player, _config.ZombiesArenaPosition);
+                // Set flag to spawn at arena (not spectate)
+                session.IsBuyingLife = true;
+                
+                // Respawn and teleport to arena
                 player.Respawn();
+                _plugin.TeleportPlayer(player, _config.ZombiesArenaPosition);
                 _plugin.GiveLoadout(player);
                 
                 _plugin.SendReply(player, $"<color=#44FF44>Life purchased!</color> You're back in the fight! (-{BUY_LIFE_COST} tokens)");
@@ -7323,62 +7225,163 @@ namespace Oxide.Plugins
             }
             
             /// <summary>
-            /// Show match end stats summary to player
+            /// Show match end stats summary to player with all players' stats
             /// </summary>
             private void ShowMatchEndStats(BasePlayer player, PlayerSession session)
             {
                 if (player == null || session == null) return;
                 
+                // Collect all players' match stats
+                var allPlayers = new List<(string name, int kills, int tokens)>();
+                foreach (ulong steamId in _zombiesQueue)
+                {
+                    var p = BasePlayer.FindByID(steamId);
+                    var s = _plugin.GetSession(steamId);
+                    if (p != null && s != null)
+                    {
+                        allPlayers.Add((p.displayName, s.Profile.CurrentMatchKills, s.Profile.CurrentMatchTokens));
+                    }
+                }
+                
+                // Sort by kills descending
+                allPlayers = allPlayers.OrderByDescending(x => x.kills).ToList();
+                
                 // Create match stats summary UI
                 CuiHelper.DestroyUi(player, "MatchEndStats");
                 var container = new CuiElementContainer();
                 
-                // Background panel
+                // Background panel (taller to fit all player stats)
                 container.Add(new CuiPanel
                 {
                     Image = { Color = "0.05 0.05 0.1 0.95" },
-                    RectTransform = { AnchorMin = "0.30 0.25", AnchorMax = "0.70 0.75" }
+                    RectTransform = { AnchorMin = "0.25 0.15", AnchorMax = "0.75 0.85" }
                 }, "Overlay", "MatchEndStats");
                 
                 // Title
                 container.Add(new CuiLabel
                 {
                     Text = { Text = "━━━ MATCH COMPLETE ━━━", FontSize = 26, Align = TextAnchor.MiddleCenter, Color = "1 0.7 0.2 1" },
-                    RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
+                    RectTransform = { AnchorMin = "0 0.90", AnchorMax = "1 0.98" }
                 }, "MatchEndStats");
                 
-                // Stats
-                int kills = session.Profile.CurrentMatchKills;
-                int tokens = session.Profile.CurrentMatchTokens;
+                // Your Stats Section
+                int myKills = session.Profile.CurrentMatchKills;
+                int myTokens = session.Profile.CurrentMatchTokens;
                 int highWave = session.Profile.HighestWave;
-                int totalZombieKills = session.Profile.ZombieKills;
                 int totalTokens = session.Profile.Tokens;
                 
-                string statsText = $"<color=#FF6666>💀 KILLS THIS MATCH:</color>  <color=#FFFFFF>{kills}</color>\n\n" +
-                                   $"<color=#66FF66>🩸 TOKENS EARNED:</color>  <color=#FFFFFF>+{tokens}</color>\n\n" +
-                                   $"<color=#6666FF>🏆 HIGHEST WAVE:</color>  <color=#FFFFFF>{highWave}</color>\n\n" +
-                                   $"<color=#AAAAAA>━━━━━━━━━━━━━━━━━━━━━━</color>\n\n" +
-                                   $"<color=#FF9933>📊 TOTAL ZOMBIE KILLS:</color>  <color=#FFFFFF>{totalZombieKills}</color>\n\n" +
-                                   $"<color=#33FF99>💰 TOTAL TOKENS:</color>  <color=#FFFFFF>{totalTokens}</color>";
+                string yourStatsText = $"<color=#66FFFF>YOUR STATS:</color>\n" +
+                                       $"<color=#FF6666>💀 Kills:</color> {myKills}  |  " +
+                                       $"<color=#66FF66>🩸 Earned:</color> +{myTokens}  |  " +
+                                       $"<color=#6666FF>🏆 Best Wave:</color> {highWave}  |  " +
+                                       $"<color=#33FF99>💰 Total:</color> {totalTokens}";
                 
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = statsText, FontSize = 18, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
-                    RectTransform = { AnchorMin = "0.05 0.15", AnchorMax = "0.95 0.82" }
+                    Text = { Text = yourStatsText, FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
+                    RectTransform = { AnchorMin = "0.05 0.78", AnchorMax = "0.95 0.88" }
                 }, "MatchEndStats");
+                
+                // Separator
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.5 0.5 0.5 0.3" },
+                    RectTransform = { AnchorMin = "0.1 0.76", AnchorMax = "0.9 0.77" }
+                }, "MatchEndStats");
+                
+                // All Players Section Header
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "🏆 ALL PLAYERS - MATCH RESULTS 🏆", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 0.8 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.68", AnchorMax = "1 0.75" }
+                }, "MatchEndStats");
+                
+                // Column headers
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "#", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.05 0.62", AnchorMax = "0.12 0.68" }
+                }, "MatchEndStats");
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "PLAYER", FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.14 0.62", AnchorMax = "0.55 0.68" }
+                }, "MatchEndStats");
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "KILLS", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.55 0.62", AnchorMax = "0.72 0.68" }
+                }, "MatchEndStats");
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "TOKENS", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.72 0.62", AnchorMax = "0.95 0.68" }
+                }, "MatchEndStats");
+                
+                // Player rows (up to 8 players shown)
+                float rowHeight = 0.055f;
+                float startY = 0.56f;
+                int maxRows = Math.Min(allPlayers.Count, 8);
+                
+                for (int i = 0; i < maxRows; i++)
+                {
+                    var (name, kills, tokens) = allPlayers[i];
+                    float yPos = startY - (i * rowHeight);
+                    
+                    string bgColor = name == player.displayName ? "0.2 0.3 0.2 0.6" : "0.08 0.08 0.1 0.5";
+                    string rowName = $"PlayerRow_{i}";
+                    
+                    container.Add(new CuiPanel
+                    {
+                        Image = { Color = bgColor },
+                        RectTransform = { AnchorMin = $"0.05 {yPos}", AnchorMax = $"0.95 {yPos + rowHeight - 0.005f}" }
+                    }, "MatchEndStats", rowName);
+                    
+                    // Rank with medal
+                    string rankText = i == 0 ? "🥇" : i == 1 ? "🥈" : i == 2 ? "🥉" : $"#{i + 1}";
+                    string rankColor = i == 0 ? "1 0.85 0 1" : i == 1 ? "0.8 0.8 0.9 1" : i == 2 ? "0.8 0.5 0.2 1" : "1 1 1 0.8";
+                    
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = rankText, FontSize = 14, Align = TextAnchor.MiddleCenter, Color = rankColor },
+                        RectTransform = { AnchorMin = "0 0", AnchorMax = "0.10 1" }
+                    }, rowName);
+                    
+                    // Name
+                    string displayName = name.Length > 16 ? name.Substring(0, 16) + "..." : name;
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = displayName, FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "1 1 1 0.9" },
+                        RectTransform = { AnchorMin = "0.12 0", AnchorMax = "0.54 1" }
+                    }, rowName);
+                    
+                    // Kills
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = kills.ToString(), FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.8 0.3 0.3 1" },
+                        RectTransform = { AnchorMin = "0.54 0", AnchorMax = "0.72 1" }
+                    }, rowName);
+                    
+                    // Tokens
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = $"+{tokens}", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.3 0.8 0.3 1" },
+                        RectTransform = { AnchorMin = "0.72 0", AnchorMax = "0.98 1" }
+                    }, rowName);
+                }
                 
                 // Close button
                 container.Add(new CuiButton
                 {
                     Button = { Color = "0.3 0.6 0.3 0.8", Command = "matchstats.close" },
                     Text = { Text = "CONTINUE", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
-                    RectTransform = { AnchorMin = "0.35 0.03", AnchorMax = "0.65 0.12" }
+                    RectTransform = { AnchorMin = "0.35 0.02", AnchorMax = "0.65 0.09" }
                 }, "MatchEndStats");
                 
                 CuiHelper.AddUi(player, container);
                 
-                // Auto-close after 10 seconds
-                _plugin.timer.Once(10f, () =>
+                // Auto-close after 15 seconds
+                _plugin.timer.Once(15f, () =>
                 {
                     if (player != null && player.IsConnected)
                     {

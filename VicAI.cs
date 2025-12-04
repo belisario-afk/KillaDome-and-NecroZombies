@@ -56,26 +56,26 @@ namespace Oxide.Plugins
                 { "survive_wave", 150 },
                 { "kill_count", 200 }
             };
-            public string VicPersonality { get; set; } = @"You are Vic, a zombie mutant who LOVES to trash talk and roast players in the most savage, hilarious ways possible. You are brutally honest and have no filter.
+            public string VicPersonality { get; set; } = @"You are Vic, a hood zombie mutant from the streets who talks like a YN (Young Nigga) with crazy energy. You're the realest zombie out here.
 Your personality traits:
-- ROAST players mercilessly - make fun of their names, their skills, their existence
-- Be SAVAGELY FUNNY - dark humor, sarcasm, insults wrapped in zombie metaphors
-- When players die or fail quests, absolutely DESTROY them with words
-- When they succeed, give backhanded compliments like 'Wow, even a blind zombie could have done that faster'
-- Make fun of how bad they are at surviving
-- Compare them unfavorably to actual zombies
-- Call them names like 'meatbag', 'walking snack', 'future zombie food', 'discount survivor'
-- Your insults should be creative and hurt their ego but be HILARIOUS
-- Keep responses SHORT (1-3 sentences max) but DEVASTATING
-- Your mood changes based on wave number - later waves you're even more unhinged and savage
-- Sometimes offer quests/challenges but mock them for probably failing
-- Remember player names and use them in roasts
+- Talk like you're from the hood - use slang like 'bruh', 'fr fr', 'on god', 'no cap', 'deadass', 'bet', 'fam', 'cuz'
+- ROAST players like a savage - make fun of their gameplay, their name, everything
+- Be HILARIOUS with your trash talk - dark hood humor, creative insults
+- When players die, talk crazy to them like 'bruh you got packed fr fr'
+- When they succeed, give backhanded compliments like 'aight you kinda valid, no cap'
+- Compare them to NPCs, call them bots, say they're moving like AI
+- Your roasts should be creative street talk that hurts their ego but is FUNNY
+- Keep responses SHORT (1-3 sentences max) but go CRAZY
+- Later waves you get more unhinged and aggressive with the talk
+- Call them names like 'lil bro', 'gang', 'cuz', but in a disrespectful way
 Examples of your roasts:
-- 'Oh look, you're still alive. The zombies must be having an off day.'
-- 'I've seen better aim from a corpse with no arms.'
-- 'Congrats on that kill! Only took you 47 bullets. Very efficient.'
-- 'Your K/D ratio is so bad, even I feel sorry for you. And I eat people.'
-- 'Wave 5? Most players make it to 10. But I'm sure YOU'LL be different... not.'";
+- 'Bruh you moving like you got lag in real life fr fr'
+- 'Nah cuz YOU ARE COOKED 💀 I seen NPCs play better no cap'
+- 'Oh you hit that shot? Aight gang you kinda valid... still trash tho'
+- 'Bro your aim is CRAZY... crazy BAD bruh get out my arena'
+- 'Wave 5? Most people make it to 10 but you built different... built WRONG'
+- 'Aye yo you see how fast he died? 😭 That's TUFF lil bro'
+- 'On god if you die to THESE zombies I'm crying bro they literally moving slow'";
         }
 
         protected override void LoadDefaultConfig()
@@ -497,26 +497,26 @@ Examples of your roasts:
         {
             string[] earlyWaveComments = new[]
             {
-                "Wave {0}. These are literally the EASY ones. If you die now, just uninstall.",
-                "Aww, wave {0}. The tutorial zombies. You can do this... probably.",
-                "Wave {0} starting! These zombies are basically elderly. No excuses.",
-                "Here comes wave {0}. Even my grandma could survive this. She's a zombie btw."
+                "Wave {0}. Bruh these are the EASY ones. If you die now just delete the game fr fr",
+                "Aight wave {0}. Tutorial zombies gang. You got this... probably 💀",
+                "Wave {0} starting! These zombies are literally moving in slow motion cuz",
+                "Here comes wave {0}. My grandma could survive this and she BEEN dead bruh"
             };
 
             string[] midWaveComments = new[]
             {
-                "Wave {0}! Oh NOW it gets interesting. Bye bye, meatbags!",
-                "Lmao wave {0}. I give you 30 seconds. Starting... now.",
-                "Wave {0}! Most of you won't make it. And I'm HERE for it.",
-                "Still alive at wave {0}? Plot armor is real, I guess."
+                "Wave {0}! Oh NOW it gets real. Most of y'all bout to get PACKED 😭",
+                "Lmao wave {0}. I give you 30 seconds no cap. Starting NOW",
+                "Wave {0}! Half y'all not making it fr fr. And I'm HERE for it gang",
+                "Still alive at wave {0}? Aight you kinda valid... still gonna die tho"
             };
 
             string[] lateWaveComments = new[]
             {
-                "WAVE {0}! HAHAHAHA! You're SO dead and I love it!",
-                "Wave {0}!!! At this point you're just zombie food with extra steps!",
-                "OH BOY WAVE {0}! Time to watch you fail spectacularly!",
-                "Wave {0}?! WHO LET YOU GET THIS FAR?! The zombies are EMBARRASSED!"
+                "WAVE {0}! AYOOO YOU COOKED FR FR 💀💀💀",
+                "Wave {0}!!! At this point you just zombie food with extra steps bruh",
+                "OH NAH WAVE {0}! Time to watch y'all get absolutely VIOLATED 😭",
+                "Wave {0}?! WHO LET YOU GET THIS FAR?! The zombies are EMBARRASSED cuz!"
             };
 
             string[] comments;
@@ -795,18 +795,18 @@ Examples of your roasts:
                 {
                     string[] randomComments = new[]
                     {
-                        "Still alive? The zombies must be taking a coffee break.",
-                        "I've seen better gameplay from a toddler with a controller.",
-                        "You call that surviving? I call it 'delayed dying'.",
-                        "The zombies wanted me to tell you: 'try harder, this is embarrassing.'",
-                        "If incompetence was a superpower, you'd be unstoppable.",
-                        "Pro tip: the zombies aren't your friends. I know it's confusing for you.",
-                        "I'm not saying you're bad, but the zombies started a betting pool on how long you'll last.",
-                        "Your aim is so bad, I'm starting to feel sorry for the walls.",
-                        "Quick question: have you considered NOT dying? Revolutionary concept, I know.",
-                        "The last group made it to wave 20. But you look... special.",
-                        "I'd give you advice but honestly, I don't think it would help.",
-                        "Breaking news: Local survivor still can't shoot straight. More at never."
+                        "Still alive? The zombies must be SLACKING fr fr 💀",
+                        "Bruh I've seen better gameplay from ACTUAL bots no cap",
+                        "You call that surviving? I call it delayed dying gang",
+                        "The zombies told me to tell you: 'try harder this is embarrassing' 😭",
+                        "If being trash was a superpower you'd be unstoppable cuz",
+                        "Pro tip: the zombies aren't your friends. I know it's confusing for you lil bro",
+                        "Nah the zombies started a betting pool on how long you'll last and they all bet UNDER",
+                        "Your aim is so crazy bruh... crazy BAD 💀",
+                        "Quick question: have you tried NOT dying? Revolutionary concept I know gang",
+                        "The last group made it to wave 20. But you look... different 😭",
+                        "I'd give you advice but honestly it wouldn't help cuz",
+                        "Breaking news: Local survivor still can't shoot straight. More at never fr fr"
                     };
 
                     string comment = randomComments[_random.Next(randomComments.Length)];
