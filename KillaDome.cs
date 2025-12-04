@@ -1319,6 +1319,172 @@ namespace Oxide.Plugins
         {
             if (player == null || !player.IsConnected) return;
             player.Teleport(_config.LobbySpawnPosition);
+            
+            // Show lobby leaderboard
+            ShowLobbyLeaderboard(player);
+        }
+        
+        /// <summary>
+        /// Show a mini leaderboard when in the lobby
+        /// </summary>
+        private void ShowLobbyLeaderboard(BasePlayer player)
+        {
+            if (player == null) return;
+            
+            // Destroy any existing lobby leaderboard
+            CuiHelper.DestroyUi(player, "LobbyLeaderboard");
+            
+            var leaderboard = GetTopWaveLeaders(5);
+            if (leaderboard == null || leaderboard.Count == 0) return;
+            
+            var container = new CuiElementContainer();
+            
+            // Mini leaderboard panel (top right)
+            container.Add(new CuiPanel
+            {
+                Image = { Color = "0.02 0.02 0.06 0.85" },
+                RectTransform = { AnchorMin = "0.78 0.60", AnchorMax = "0.99 0.92" },
+                CursorEnabled = false
+            }, "Overlay", "LobbyLeaderboard");
+            
+            // Title
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "🏆 TOP SURVIVORS 🏆", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 0.8 0.2 1" },
+                RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
+            }, "LobbyLeaderboard");
+            
+            // Separator
+            container.Add(new CuiPanel
+            {
+                Image = { Color = "0.5 0.4 0.2 0.5" },
+                RectTransform = { AnchorMin = "0.05 0.83", AnchorMax = "0.95 0.84" }
+            }, "LobbyLeaderboard");
+            
+            // Leaderboard entries
+            float rowHeight = 0.14f;
+            float startY = 0.68f;
+            
+            for (int i = 0; i < leaderboard.Count; i++)
+            {
+                var entry = leaderboard[i];
+                float yPos = startY - (i * rowHeight);
+                
+                string rankText = i == 0 ? "🥇" : i == 1 ? "🥈" : i == 2 ? "🥉" : $"#{i + 1}";
+                string rankColor = i == 0 ? "1 0.85 0 1" : i == 1 ? "0.8 0.8 0.9 1" : i == 2 ? "0.8 0.5 0.2 1" : "0.8 0.8 0.8 1";
+                
+                string rowName = $"LBRow_{i}";
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.06 0.06 0.1 0.7" },
+                    RectTransform = { AnchorMin = $"0.02 {yPos}", AnchorMax = $"0.98 {yPos + rowHeight - 0.01f}" }
+                }, "LobbyLeaderboard", rowName);
+                
+                // Rank
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = rankText, FontSize = 12, Align = TextAnchor.MiddleCenter, Color = rankColor },
+                    RectTransform = { AnchorMin = "0 0", AnchorMax = "0.15 1" }
+                }, rowName);
+                
+                // Name
+                string displayName = entry.DisplayName ?? "Unknown";
+                if (displayName.Length > 10) displayName = displayName.Substring(0, 10) + "..";
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = displayName, FontSize = 11, Align = TextAnchor.MiddleLeft, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0.18 0", AnchorMax = "0.70 1" }
+                }, rowName);
+                
+                // Wave
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = $"W{entry.HighestWave}", FontSize = 11, Align = TextAnchor.MiddleCenter, Color = "0.3 0.8 1 1" },
+                    RectTransform = { AnchorMin = "0.70 0", AnchorMax = "1 1" }
+                }, rowName);
+            }
+            
+            // Footer with hint
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "/kd open for full stats", FontSize = 9, Align = TextAnchor.MiddleCenter, Color = "0.5 0.5 0.5 1" },
+                RectTransform = { AnchorMin = "0 0.01", AnchorMax = "1 0.10" }
+            }, "LobbyLeaderboard");
+            
+            CuiHelper.AddUi(player, container);
+        }
+        
+        /// <summary>
+        /// Get top wave leaders for lobby display
+        /// </summary>
+        private List<LeaderboardEntry> GetTopWaveLeaders(int count)
+        {
+            var entries = new List<LeaderboardEntry>();
+            
+            // Get all active sessions first
+            foreach (var kvp in _activeSessions)
+            {
+                var profile = kvp.Value.Profile;
+                if (profile.HighestWave > 0)
+                {
+                    entries.Add(new LeaderboardEntry
+                    {
+                        SteamID = profile.SteamID,
+                        DisplayName = profile.DisplayName ?? "Unknown",
+                        HighestWave = profile.HighestWave,
+                        ZombieKills = profile.ZombieKills
+                    });
+                }
+            }
+            
+            // Load additional profiles from saved data
+            string dataDir = Path.Combine(Interface.Oxide.DataDirectory, "KillaDome");
+            if (Directory.Exists(dataDir))
+            {
+                foreach (string file in Directory.GetFiles(dataDir, "*.json"))
+                {
+                    try
+                    {
+                        string fileName = Path.GetFileNameWithoutExtension(file);
+                        if (!ulong.TryParse(fileName, out ulong steamId)) continue;
+                        
+                        // Skip if already in active sessions
+                        if (entries.Any(e => e.SteamID == steamId)) continue;
+                        
+                        string json = File.ReadAllText(file);
+                        var profile = JsonConvert.DeserializeObject<PlayerProfile>(json);
+                        if (profile != null && profile.HighestWave > 0)
+                        {
+                            entries.Add(new LeaderboardEntry
+                            {
+                                SteamID = profile.SteamID,
+                                DisplayName = profile.DisplayName ?? "Unknown",
+                                HighestWave = profile.HighestWave,
+                                ZombieKills = profile.ZombieKills
+                            });
+                        }
+                    }
+                    catch { /* Skip invalid files */ }
+                }
+            }
+            
+            // Sort by highest wave and return top entries
+            return entries
+                .OrderByDescending(e => e.HighestWave)
+                .ThenByDescending(e => e.ZombieKills)
+                .Take(count)
+                .ToList();
+        }
+        
+        /// <summary>
+        /// Hide lobby leaderboard
+        /// </summary>
+        private void HideLobbyLeaderboard(BasePlayer player)
+        {
+            if (player != null)
+            {
+                CuiHelper.DestroyUi(player, "LobbyLeaderboard");
+            }
         }
         
         private void TeleportToArena(BasePlayer player)
@@ -3000,6 +3166,17 @@ namespace Oxide.Plugins
                 CanLeaveMatch = true;
                 IsBuyingLife = false;
             }
+        }
+        
+        /// <summary>
+        /// Leaderboard entry for displaying player stats
+        /// </summary>
+        private class LeaderboardEntry
+        {
+            public ulong SteamID { get; set; }
+            public string DisplayName { get; set; }
+            public int HighestWave { get; set; }
+            public int ZombieKills { get; set; }
         }
         
         public class PlayerProfile
@@ -6382,6 +6559,9 @@ namespace Oxide.Plugins
             public void ConfirmModeSelection(BasePlayer player, GameMode mode)
             {
                 CloseConfirmationUI(player);
+                
+                // Hide lobby leaderboard when entering match
+                _plugin.HideLobbyLeaderboard(player);
                 
                 var session = _plugin.GetSession(player.userID);
                 if (session == null) return;
