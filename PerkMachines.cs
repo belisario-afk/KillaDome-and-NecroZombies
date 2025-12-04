@@ -794,14 +794,14 @@ namespace Oxide.Plugins
             }
 
             // Force network update to sync skin to all clients
-            vm.SendNetworkUpdateImmediate(true);
+            vm.SendNetworkUpdateImmediate();
             
             // Additional delayed update to ensure skin shows for nearby players
             timer.Once(0.5f, () =>
             {
                 if (vm != null && !vm.IsDestroyed)
                 {
-                    vm.SendNetworkUpdateImmediate(true);
+                    vm.SendNetworkUpdateImmediate();
                 }
             });
 

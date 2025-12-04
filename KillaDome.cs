@@ -1085,7 +1085,7 @@ namespace Oxide.Plugins
                     UpdateZombieKillHUD(zombieAttacker, session);
                     
                     // Save profile to ensure stats persist
-                    _saveManager?.SavePlayerProfile(zombieAttacker.userID, session.Profile);
+                    _saveManager?.SavePlayerProfile(session.Profile);
                     
                     LogDebug($"{zombieAttacker.displayName} killed a zombie: MatchKills={session.Profile.CurrentMatchKills}, MatchTokens={session.Profile.CurrentMatchTokens}");
                 }
