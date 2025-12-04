@@ -8,8 +8,9 @@
  * - Custom VFX/SFX for bullets and attachments
  * - Store integration (Tebex-compatible)
  * - High performance, GC-friendly architecture
+ * - NecroZombies integration for Black Ops zombies experience
  * 
- * Version: 1.0.0
+ * Version: 1.3.0
  * Author: KillaDome Dev Team
  */
 
@@ -26,8 +27,8 @@ using System.IO;
 
 namespace Oxide.Plugins
 {
-    [Info("KillaDome", "KillaDome", "1.0.0")]
-    [Description("Full COD-style server experience with lobby, loadouts, and progression")]
+    [Info("KillaDome", "KillaDome", "1.6.0")]
+    [Description("Full COD-style server experience with lobby, loadouts, progression, Black Ops zombies integration, host system, and leave/rejoin")]
     public class KillaDome : RustPlugin
     {
         #region Fields
@@ -35,7 +36,12 @@ namespace Oxide.Plugins
         [PluginReference]
         private Plugin ImageLibrary;
         
+        [PluginReference]
+        private Plugin NecroZombies;
+        
         private DomeManager _domeManager;
+        private ZombieIntegration _zombieIntegration;
+        private GameModeSystem _gameModeSystem;
         private LobbyUI _lobbyUI;
         private LoadoutEditor _loadoutEditor;
         private AttachmentSystem _attachmentSystem;
@@ -54,6 +60,9 @@ namespace Oxide.Plugins
         
         private const string PERMISSION_ADMIN = "killadome.admin";
         private const string PERMISSION_VIP = "killadome.vip";
+        
+        // Teleporter zone check timer
+        private Timer _teleporterCheckTimer;
         
         #endregion
         
@@ -565,6 +574,50 @@ namespace Oxide.Plugins
             
             [JsonProperty("Enable Debug Logging")]
             public bool EnableDebugLogging { get; set; } = false;
+            
+            // ===== ZOMBIES MODE SETTINGS (NecroZombies Integration) =====
+            [JsonProperty("Enable Zombies Mode")]
+            public bool EnableZombiesMode { get; set; } = true;
+            
+            [JsonProperty("Zombies Auto Start On Match")]
+            public bool ZombiesAutoStartOnMatch { get; set; } = true;
+            
+            [JsonProperty("Zombies Profile Name")]
+            public string ZombiesProfileName { get; set; } = "default";
+            
+            [JsonProperty("Zombies Spawn Set Name")]
+            public string ZombiesSpawnSetName { get; set; } = "";
+            
+            [JsonProperty("Tokens Per Zombie Kill")]
+            public int TokensPerZombieKill { get; set; } = 5;
+            
+            // ===== GAME MODE TELEPORTER SYSTEM =====
+            [JsonProperty("Zombies Teleporter Position")]
+            public Vector3 ZombiesTeleporterPosition { get; set; } = new Vector3(10, 100, 0);
+            
+            [JsonProperty("Normal Teleporter Position")]
+            public Vector3 NormalTeleporterPosition { get; set; } = new Vector3(-10, 100, 0);
+            
+            [JsonProperty("Teleporter Radius")]
+            public float TeleporterRadius { get; set; } = 2.0f;
+            
+            [JsonProperty("Spectate Position (Skybox)")]
+            public Vector3 SpectatePosition { get; set; } = new Vector3(0, 500, 0);
+            
+            [JsonProperty("Zombies Arena Position")]
+            public Vector3 ZombiesArenaPosition { get; set; } = new Vector3(0, 100, 1000);
+            
+            [JsonProperty("Normal Arena Position")]
+            public Vector3 NormalArenaPosition { get; set; } = new Vector3(0, 100, 500);
+            
+            [JsonProperty("Enable Mode Confirmation UI")]
+            public bool EnableModeConfirmationUI { get; set; } = true;
+            
+            [JsonProperty("Enable Teleporter Hex Tiles")]
+            public bool EnableTeleporterHexTiles { get; set; } = true;
+            
+            [JsonProperty("Normal Respawn Delay Seconds")]
+            public float NormalRespawnDelay { get; set; } = 5.0f;
         }
         
         protected override void LoadDefaultConfig()
@@ -704,6 +757,8 @@ namespace Oxide.Plugins
             _lobbyUI = new LobbyUI(this, _loadoutEditor, _forgeStation, _tokenEconomy);
             _domeManager = new DomeManager(this, _config);
             _telemetry = new TelemetrySystem(this);
+            _zombieIntegration = new ZombieIntegration(this, _config);
+            _gameModeSystem = new GameModeSystem(this, _config);
             
             LogDebug("KillaDome initialized successfully");
         }
@@ -715,6 +770,45 @@ namespace Oxide.Plugins
             
             // Load images after server is ready
             timer.Once(5f, () => LoadImages());
+            
+            // Start teleporter zone check timer
+            _teleporterCheckTimer = timer.Every(0.5f, () => CheckTeleporterZones());
+            
+            // Spawn teleporter spheres after a short delay
+            timer.Once(3f, () => _gameModeSystem.SpawnTeleporterTiles());
+            
+            // Check NecroZombies integration
+            if (_config.EnableZombiesMode)
+            {
+                if (NecroZombies == null || !NecroZombies.IsLoaded)
+                {
+                    PrintWarning("NecroZombies plugin not loaded. Zombies mode will be disabled. Install NecroZombies for the full Black Ops zombies experience!");
+                }
+                else
+                {
+                    Puts("NecroZombies integration active! Black Ops zombies mode enabled.");
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Check if any players are in teleporter zones
+        /// </summary>
+        private void CheckTeleporterZones()
+        {
+            foreach (var player in BasePlayer.activePlayerList)
+            {
+                if (player == null || !player.IsConnected) continue;
+                
+                var session = GetSession(player.userID);
+                if (session == null || session.IsInMatch) continue;
+                
+                GameMode zone = _gameModeSystem.GetTeleporterZone(player.transform.position);
+                if (zone != GameMode.None)
+                {
+                    _gameModeSystem.OnPlayerEnterTeleporter(player, zone);
+                }
+            }
         }
         
         private void LoadImages()
@@ -765,6 +859,9 @@ namespace Oxide.Plugins
         
         private void Unload()
         {
+            // Clean up teleporter spheres
+            _gameModeSystem?.CleanupTeleporterTiles();
+            
             // Clean up all UI
             foreach (var player in BasePlayer.activePlayerList)
             {
@@ -834,6 +931,9 @@ namespace Oxide.Plugins
             
             _lobbyUI?.DestroyUI(player);
             
+            // Notify game mode system about disconnect (for host transfer, etc.)
+            _gameModeSystem?.OnPlayerDisconnected(player.userID);
+            
             if (_activeSessions.TryGetValue(player.userID, out var session))
             {
                 _saveManager?.SavePlayerProfile(session.Profile);
@@ -843,31 +943,385 @@ namespace Oxide.Plugins
             LogDebug($"Player {player.displayName} disconnected: {reason}");
         }
         
-        private void OnEntityDeath(BasePlayer victim, HitInfo info)
+        /// <summary>
+        /// Handle player respawn - set spawn position to lobby
+        /// This hook is called when a player is about to respawn after death or joining
+        /// </summary>
+        private object OnPlayerRespawn(BasePlayer player, BasePlayer.SpawnPoint spawnPoint)
         {
-            if (victim == null || _tokenEconomy == null || _telemetry == null) return;
+            if (player == null) return null;
             
-            var attacker = info?.InitiatorPlayer;
-            if (attacker != null && attacker != victim && attacker.IsConnected)
+            // Check if player is in a game mode
+            if (_gameModeSystem != null)
             {
-                // Award tokens for kill
-                _tokenEconomy.AwardTokens(attacker.userID, _config.TokensPerKill);
+                var session = GetSession(player.userID);
+                var mode = _gameModeSystem.GetPlayerMode(player.userID);
                 
-                // Track telemetry
-                _telemetry.RecordKill(attacker.userID, victim.userID);
-                
-                LogDebug($"{attacker.displayName} killed {victim.displayName}");
+                if (mode == GameMode.Zombies)
+                {
+                    // If buying life, spawn at arena instead of spectate
+                    if (session != null && session.IsBuyingLife)
+                    {
+                        session.IsBuyingLife = false; // Reset flag
+                        if (_config.ZombiesArenaPosition != Vector3.zero)
+                        {
+                            spawnPoint.pos = _config.ZombiesArenaPosition;
+                            spawnPoint.rot = Quaternion.identity;
+                            return spawnPoint;
+                        }
+                    }
+                    
+                    // Zombies mode: spawn at spectate position
+                    if (_config.SpectatePosition != Vector3.zero)
+                    {
+                        spawnPoint.pos = _config.SpectatePosition;
+                        spawnPoint.rot = Quaternion.identity;
+                        return spawnPoint;
+                    }
+                }
             }
             
-            // Respawn victim in lobby after delay
-            timer.Once(3f, () =>
+            // Default: spawn at lobby position
+            if (_config.LobbySpawnPosition != Vector3.zero)
             {
-                if (victim != null && victim.IsConnected)
+                spawnPoint.pos = _config.LobbySpawnPosition;
+                spawnPoint.rot = Quaternion.identity;
+                return spawnPoint;
+            }
+            
+            return null; // Allow default spawn if no lobby position set
+        }
+        
+        private void OnEntityDeath(BaseCombatEntity entity, HitInfo info)
+        {
+            if (entity == null || _tokenEconomy == null) return;
+            
+            // Handle player deaths
+            var victim = entity as BasePlayer;
+            if (victim != null)
+            {
+                if (_telemetry == null) return;
+                
+                var victimSession = GetSession(victim.userID);
+                
+                var attacker = info?.InitiatorPlayer;
+                if (attacker != null && attacker != victim && attacker.IsConnected)
                 {
-                    TeleportToLobby(victim);
-                    victim.Respawn();
+                    // Award tokens for kill
+                    _tokenEconomy.AwardTokens(attacker.userID, _config.TokensPerKill);
+                    
+                    // Track telemetry
+                    _telemetry.RecordKill(attacker.userID, victim.userID);
+                    
+                    LogDebug($"{attacker.displayName} killed {victim.displayName}");
                 }
-            });
+                
+                // Check if player is in zombies mode - handle differently
+                if (victimSession != null && victimSession.SelectedGameMode == GameMode.Zombies && victimSession.IsInMatch)
+                {
+                    // Zombies mode: spectate until next wave
+                    _gameModeSystem.OnZombiesPlayerDeath(victim);
+                    return;
+                }
+                
+                // Normal mode: Respawn victim in lobby after delay
+                timer.Once(3f, () =>
+                {
+                    if (victim != null && victim.IsConnected)
+                    {
+                        // Check if in normal match - respawn in arena
+                        var session = GetSession(victim.userID);
+                        if (session != null && session.SelectedGameMode == GameMode.Normal && session.IsInMatch)
+                        {
+                            TeleportPlayer(victim, _config.NormalArenaPosition);
+                            victim.Respawn();
+                            GiveLoadout(victim);
+                        }
+                        else
+                        {
+                            TeleportToLobby(victim);
+                            victim.Respawn();
+                        }
+                    }
+                });
+                return;
+            }
+            
+            // Handle zombie/NPC deaths (for Black Ops zombies mode)
+            if (info == null) return;
+            
+            // Check if this is a zombie kill (NPCPlayer/scarecrow OR BaseNpc/wolf types)
+            bool isZombie = false;
+            var npc = entity as NPCPlayer;
+            var baseNpc = entity as BaseNpc;
+            
+            // Scarecrow zombies are NPCPlayer
+            if (npc != null) isZombie = true;
+            // Hellhounds/wolves are BaseNpc
+            else if (baseNpc != null) isZombie = true;
+            
+            if (!isZombie) return;
+            
+            var zombieAttacker = info.InitiatorPlayer;
+            if (zombieAttacker != null && zombieAttacker.IsConnected && _config.EnableZombiesMode)
+            {
+                int tokensAwarded = _config.TokensPerZombieKill;
+                
+                // Award tokens for zombie kill
+                _tokenEconomy.AwardTokens(zombieAttacker.userID, tokensAwarded);
+                
+                // Track all stats
+                var session = GetSession(zombieAttacker.userID);
+                if (session != null)
+                {
+                    session.Profile.TotalKills++;
+                    session.Profile.ZombieKills++;
+                    session.Profile.CurrentMatchKills++;
+                    session.Profile.CurrentMatchTokens += tokensAwarded;
+                    session.Profile.TotalTokensEarned += tokensAwarded;
+                    session.Profile.DisplayName = zombieAttacker.displayName;
+                    
+                    // Update HUD with kill count
+                    UpdateZombieKillHUD(zombieAttacker, session);
+                    
+                    // Save profile to ensure stats persist
+                    _saveManager?.SavePlayerProfile(session.Profile);
+                    
+                    LogDebug($"{zombieAttacker.displayName} killed a zombie: MatchKills={session.Profile.CurrentMatchKills}, MatchTokens={session.Profile.CurrentMatchTokens}");
+                }
+                
+                LogDebug($"{zombieAttacker.displayName} killed a zombie (+{tokensAwarded} tokens)");
+            }
+        }
+        
+        /// <summary>
+        /// Update the zombie kill counter HUD for a player
+        /// </summary>
+        private void UpdateZombieKillHUD(BasePlayer player, PlayerSession session)
+        {
+            if (player == null || session == null) return;
+            
+            // Destroy existing HUD
+            CuiHelper.DestroyUi(player, "ZombieKillHUD");
+            
+            // Create kill counter HUD (bottom-center)
+            var container = new CuiElementContainer();
+            
+            // Main HUD panel
+            container.Add(new CuiPanel
+            {
+                Image = { Color = "0.05 0.05 0.1 0.85" },
+                RectTransform = { AnchorMin = "0.43 0.02", AnchorMax = "0.57 0.10" }
+            }, "Overlay", "ZombieKillHUD");
+            
+            // Kill icon + count
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "💀", FontSize = 22, Align = TextAnchor.MiddleLeft, Color = "1 0.3 0.3 1" },
+                RectTransform = { AnchorMin = "0.08 0.5", AnchorMax = "0.35 0.95" }
+            }, "ZombieKillHUD");
+            
+            container.Add(new CuiLabel
+            {
+                Text = { Text = $"{session.Profile.CurrentMatchKills}", FontSize = 24, Align = TextAnchor.MiddleRight, Color = "1 1 1 1" },
+                RectTransform = { AnchorMin = "0.35 0.5", AnchorMax = "0.92 0.95" }
+            }, "ZombieKillHUD");
+            
+            // Token counter
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "🩸", FontSize = 14, Align = TextAnchor.MiddleLeft, Color = "0.8 0.2 0.2 1" },
+                RectTransform = { AnchorMin = "0.08 0.05", AnchorMax = "0.35 0.45" }
+            }, "ZombieKillHUD");
+            
+            container.Add(new CuiLabel
+            {
+                Text = { Text = $"+{session.Profile.CurrentMatchTokens}", FontSize = 14, Align = TextAnchor.MiddleRight, Color = "0.6 1 0.6 1" },
+                RectTransform = { AnchorMin = "0.35 0.05", AnchorMax = "0.92 0.45" }
+            }, "ZombieKillHUD");
+            
+            CuiHelper.AddUi(player, container);
+        }
+        
+        /// <summary>
+        /// Remove the zombie kill HUD from player
+        /// </summary>
+        private void RemoveZombieKillHUD(BasePlayer player)
+        {
+            if (player != null)
+            {
+                CuiHelper.DestroyUi(player, "ZombieKillHUD");
+            }
+        }
+        
+        /// <summary>
+        /// Hook: Called when NecroZombies wave is complete - respawn spectating players
+        /// </summary>
+        private void OnNecroZombiesWaveComplete(int waveNumber)
+        {
+            LogDebug($"NecroZombies wave {waveNumber} complete - respawning spectators");
+            _gameModeSystem.OnZombiesWaveEnd();
+            
+            // Update highest wave for all players in zombies mode
+            foreach (var kvp in _activeSessions)
+            {
+                var session = kvp.Value;
+                if (session.SelectedGameMode == GameMode.Zombies)
+                {
+                    if (waveNumber > session.Profile.HighestWave)
+                    {
+                        session.Profile.HighestWave = waveNumber;
+                        LogDebug($"Player {kvp.Key} reached new highest wave: {waveNumber}");
+                    }
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Hook: PerkMachines requests price/currency info for a perk purchase.
+        /// Returns [price, currencyLabel] array to override default pricing.
+        /// </summary>
+        private object OnPerkPurchaseCost(BasePlayer player, string perkName, int defaultPrice, string defaultCurrency)
+        {
+            if (player == null || _tokenEconomy == null) return null;
+            
+            // Override price based on perk type (can be customized)
+            int price = perkName switch
+            {
+                "Juggernog" => 150,
+                "SpeedCola" => 100,
+                "DoubleTap" => 125,
+                "QuickRevive" => 100,
+                _ => defaultPrice
+            };
+            
+            LogDebug($"OnPerkPurchaseCost: {player.displayName} buying {perkName} for {price} Blood Tokens");
+            
+            // Return [price, currencyLabel]
+            return new object[] { price, "Blood Tokens" };
+        }
+        
+        /// <summary>
+        /// Hook: PerkMachines requests to charge player for perk purchase.
+        /// Returns true if charge succeeded, false if player cannot afford.
+        /// </summary>
+        private object OnPerkPurchaseCharge(BasePlayer player, string perkName, int price, string currencyLabel)
+        {
+            if (player == null || _tokenEconomy == null) return false;
+            
+            int balance = _tokenEconomy.GetBalance(player.userID);
+            
+            if (balance < price)
+            {
+                player.ChatMessage($"<color=#FF4444>Not enough Blood Tokens!</color> Need {price}, have {balance}");
+                LogDebug($"OnPerkPurchaseCharge: {player.displayName} cannot afford {perkName} ({balance}/{price})");
+                return false;
+            }
+            
+            // Deduct tokens
+            bool success = _tokenEconomy.SpendTokens(player.userID, price);
+            
+            if (success)
+            {
+                player.ChatMessage($"<color=#00FF00>Purchased {perkName} for {price} Blood Tokens!</color> Balance: {balance - price}");
+                LogDebug($"OnPerkPurchaseCharge: {player.displayName} bought {perkName} for {price} tokens");
+            }
+            
+            return success;
+        }
+        
+        /// <summary>
+        /// Hook: SimplePrefabEditor (Mystery Box) requests cost for a player to use the Mystery Box.
+        /// Returns the token cost (default 100 Blood Tokens).
+        /// </summary>
+        private object OnMysteryBoxCost(BasePlayer player, uint boxId)
+        {
+            if (player == null) return 100;
+            
+            // Default Mystery Box cost - 100 Blood Tokens
+            int cost = 100;
+            LogDebug($"OnMysteryBoxCost: {player.displayName} checking Mystery Box {boxId} cost: {cost}");
+            return cost;
+        }
+        
+        /// <summary>
+        /// Hook: SimplePrefabEditor (Mystery Box) requests to charge player for using the Mystery Box.
+        /// Returns true if charge succeeded, false if player cannot afford.
+        /// </summary>
+        private object OnMysteryBoxCharge(BasePlayer player, uint boxId, int cost)
+        {
+            if (player == null || _tokenEconomy == null) return false;
+            
+            int balance = _tokenEconomy.GetBalance(player.userID);
+            
+            if (balance < cost)
+            {
+                player.ChatMessage($"<color=#FF4444>Not enough Blood Tokens!</color> Need {cost}, have {balance}");
+                LogDebug($"OnMysteryBoxCharge: {player.displayName} cannot afford Mystery Box ({balance}/{cost})");
+                return false;
+            }
+            
+            // Deduct tokens
+            bool success = _tokenEconomy.SpendTokens(player.userID, cost);
+            
+            if (success)
+            {
+                player.ChatMessage($"<color=#00FF00>Used Mystery Box for {cost} Blood Tokens!</color> Balance: {balance - cost}");
+                LogDebug($"OnMysteryBoxCharge: {player.displayName} used Mystery Box for {cost} tokens");
+            }
+            
+            return success;
+        }
+        
+        /// <summary>
+        /// Hook: WallBuyAdvanced requests cost for a wall-buy weapon.
+        /// Returns the Blood Token cost (uses the cost configured in wall-buy point).
+        /// </summary>
+        private object OnWallBuyCost(BasePlayer player, string itemShortname, int defaultCost)
+        {
+            if (player == null) return defaultCost;
+            
+            // Use the configured cost from wall-buy, but convert to Blood Tokens
+            LogDebug($"OnWallBuyCost: {player.displayName} checking wall-buy {itemShortname} cost: {defaultCost}");
+            return defaultCost;
+        }
+        
+        /// <summary>
+        /// Hook: WallBuyAdvanced requests to charge player for purchasing a wall-buy weapon.
+        /// Returns true if charge succeeded, false if player cannot afford.
+        /// </summary>
+        private object OnWallBuyCharge(BasePlayer player, string itemShortname, int cost)
+        {
+            if (player == null || _tokenEconomy == null) return false;
+            
+            int balance = _tokenEconomy.GetBalance(player.userID);
+            
+            if (balance < cost)
+            {
+                player.ChatMessage($"<color=#FF4444>Not enough Blood Tokens!</color> Need {cost}, have {balance}");
+                LogDebug($"OnWallBuyCharge: {player.displayName} cannot afford {itemShortname} ({balance}/{cost})");
+                return false;
+            }
+            
+            // Deduct tokens
+            bool success = _tokenEconomy.SpendTokens(player.userID, cost);
+            
+            if (success)
+            {
+                player.ChatMessage($"<color=#00FF00>Purchased {itemShortname} for {cost} Blood Tokens!</color> Balance: {balance - cost}");
+                LogDebug($"OnWallBuyCharge: {player.displayName} bought {itemShortname} for {cost} tokens");
+            }
+            
+            return success;
+        }
+        
+        /// <summary>
+        /// Hook: WallBuyAdvanced requests player's current Blood Token balance for UI display.
+        /// </summary>
+        private object OnWallBuyGetBalance(BasePlayer player)
+        {
+            if (player == null || _tokenEconomy == null) return 0;
+            return _tokenEconomy.GetBalance(player.userID);
         }
         
         #endregion
@@ -878,6 +1332,204 @@ namespace Oxide.Plugins
         {
             if (player == null || !player.IsConnected) return;
             player.Teleport(_config.LobbySpawnPosition);
+            
+            // Show lobby leaderboard
+            ShowLobbyLeaderboard(player);
+        }
+        
+        /// <summary>
+        /// Show a mini leaderboard when in the lobby
+        /// </summary>
+        private void ShowLobbyLeaderboard(BasePlayer player)
+        {
+            if (player == null) return;
+            
+            // Destroy any existing lobby leaderboard
+            CuiHelper.DestroyUi(player, "LobbyLeaderboard");
+            
+            var leaderboard = GetTopWaveLeaders(5);
+            if (leaderboard == null || leaderboard.Count == 0) return;
+            
+            var container = new CuiElementContainer();
+            
+            // Mini leaderboard panel (top right)
+            container.Add(new CuiPanel
+            {
+                Image = { Color = "0.02 0.02 0.06 0.85" },
+                RectTransform = { AnchorMin = "0.78 0.60", AnchorMax = "0.99 0.92" },
+                CursorEnabled = false
+            }, "Overlay", "LobbyLeaderboard");
+            
+            // Title
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "🏆 TOP SURVIVORS 🏆", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 0.8 0.2 1" },
+                RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
+            }, "LobbyLeaderboard");
+            
+            // Separator
+            container.Add(new CuiPanel
+            {
+                Image = { Color = "0.5 0.4 0.2 0.5" },
+                RectTransform = { AnchorMin = "0.05 0.83", AnchorMax = "0.95 0.84" }
+            }, "LobbyLeaderboard");
+            
+            // Leaderboard entries
+            float rowHeight = 0.14f;
+            float startY = 0.68f;
+            
+            for (int i = 0; i < leaderboard.Count; i++)
+            {
+                var entry = leaderboard[i];
+                float yPos = startY - (i * rowHeight);
+                
+                string rankText = i == 0 ? "🥇" : i == 1 ? "🥈" : i == 2 ? "🥉" : $"#{i + 1}";
+                string rankColor = i == 0 ? "1 0.85 0 1" : i == 1 ? "0.8 0.8 0.9 1" : i == 2 ? "0.8 0.5 0.2 1" : "0.8 0.8 0.8 1";
+                
+                string rowName = $"LBRow_{i}";
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.06 0.06 0.1 0.7" },
+                    RectTransform = { AnchorMin = $"0.02 {yPos}", AnchorMax = $"0.98 {yPos + rowHeight - 0.01f}" }
+                }, "LobbyLeaderboard", rowName);
+                
+                // Rank
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = rankText, FontSize = 12, Align = TextAnchor.MiddleCenter, Color = rankColor },
+                    RectTransform = { AnchorMin = "0 0", AnchorMax = "0.15 1" }
+                }, rowName);
+                
+                // Name
+                string displayName = entry.DisplayName ?? "Unknown";
+                if (displayName.Length > 10) displayName = displayName.Substring(0, 10) + "..";
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = displayName, FontSize = 11, Align = TextAnchor.MiddleLeft, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0.18 0", AnchorMax = "0.70 1" }
+                }, rowName);
+                
+                // Wave
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = $"W{entry.HighestWave}", FontSize = 11, Align = TextAnchor.MiddleCenter, Color = "0.3 0.8 1 1" },
+                    RectTransform = { AnchorMin = "0.70 0", AnchorMax = "1 1" }
+                }, rowName);
+            }
+            
+            // Footer with hint
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "/kd open for full stats", FontSize = 9, Align = TextAnchor.MiddleCenter, Color = "0.5 0.5 0.5 1" },
+                RectTransform = { AnchorMin = "0 0.01", AnchorMax = "1 0.10" }
+            }, "LobbyLeaderboard");
+            
+            CuiHelper.AddUi(player, container);
+        }
+        
+        /// <summary>
+        /// Get top wave leaders for lobby display (with caching)
+        /// </summary>
+        private List<LeaderboardEntry> _cachedLeaderboard;
+        private DateTime _lastLeaderboardCache = DateTime.MinValue;
+        private const int LEADERBOARD_CACHE_SECONDS = 60; // Cache for 1 minute
+        
+        private List<LeaderboardEntry> GetTopWaveLeaders(int count)
+        {
+            // Return cached leaderboard if still valid
+            if (_cachedLeaderboard != null && (DateTime.UtcNow - _lastLeaderboardCache).TotalSeconds < LEADERBOARD_CACHE_SECONDS)
+            {
+                return _cachedLeaderboard.Take(count).ToList();
+            }
+            
+            var entries = new List<LeaderboardEntry>();
+            
+            // Get all active sessions first
+            foreach (var kvp in _activeSessions)
+            {
+                var profile = kvp.Value.Profile;
+                if (profile.HighestWave > 0)
+                {
+                    // Get display name from player or profile
+                    string displayName = profile.DisplayName;
+                    if (string.IsNullOrEmpty(displayName) || displayName == "Unknown")
+                    {
+                        var player = kvp.Value.Player;
+                        if (player != null && !string.IsNullOrEmpty(player.displayName))
+                        {
+                            displayName = player.displayName;
+                            profile.DisplayName = displayName; // Update profile for future
+                        }
+                    }
+                    
+                    entries.Add(new LeaderboardEntry
+                    {
+                        SteamID = profile.SteamID,
+                        DisplayName = displayName ?? "Unknown",
+                        HighestWave = profile.HighestWave,
+                        ZombieKills = profile.ZombieKills
+                    });
+                }
+            }
+            
+            // Load additional profiles from saved data
+            string dataDir = Path.Combine(Interface.Oxide.DataDirectory, "KillaDome");
+            if (Directory.Exists(dataDir))
+            {
+                foreach (string file in Directory.GetFiles(dataDir, "*.json"))
+                {
+                    try
+                    {
+                        string fileName = Path.GetFileNameWithoutExtension(file);
+                        if (!ulong.TryParse(fileName, out ulong steamId)) continue;
+                        
+                        // Skip if already in active sessions
+                        if (entries.Any(e => e.SteamID == steamId)) continue;
+                        
+                        string json = File.ReadAllText(file);
+                        var profile = JsonConvert.DeserializeObject<PlayerProfile>(json);
+                        if (profile != null && profile.HighestWave > 0)
+                        {
+                            // Try to get display name from online player
+                            string displayName = profile.DisplayName;
+                            var onlinePlayer = BasePlayer.FindByID(steamId);
+                            if (onlinePlayer != null && !string.IsNullOrEmpty(onlinePlayer.displayName))
+                            {
+                                displayName = onlinePlayer.displayName;
+                            }
+                            
+                            entries.Add(new LeaderboardEntry
+                            {
+                                SteamID = profile.SteamID,
+                                DisplayName = displayName ?? "Unknown",
+                                HighestWave = profile.HighestWave,
+                                ZombieKills = profile.ZombieKills
+                            });
+                        }
+                    }
+                    catch { /* Skip invalid files */ }
+                }
+            }
+            
+            // Sort by highest wave and cache
+            _cachedLeaderboard = entries
+                .OrderByDescending(e => e.HighestWave)
+                .ThenByDescending(e => e.ZombieKills)
+                .ToList();
+            _lastLeaderboardCache = DateTime.UtcNow;
+            
+            return _cachedLeaderboard.Take(count).ToList();
+        }
+        
+        /// <summary>
+        /// Hide lobby leaderboard
+        /// </summary>
+        private void HideLobbyLeaderboard(BasePlayer player)
+        {
+            if (player != null)
+            {
+                CuiHelper.DestroyUi(player, "LobbyLeaderboard");
+            }
         }
         
         private void TeleportToArena(BasePlayer player)
@@ -899,6 +1551,23 @@ namespace Oxide.Plugins
             player.Teleport(spawnPos);
             
             // Apply loadout when entering arena
+            ApplyLoadout(player);
+        }
+        
+        /// <summary>
+        /// Teleport player to specific position
+        /// </summary>
+        private void TeleportPlayer(BasePlayer player, Vector3 position)
+        {
+            if (player == null || !player.IsConnected) return;
+            player.Teleport(position);
+        }
+        
+        /// <summary>
+        /// Give player their loadout (wrapper for ApplyLoadout)
+        /// </summary>
+        private void GiveLoadout(BasePlayer player)
+        {
             ApplyLoadout(player);
         }
         
@@ -1195,6 +1864,88 @@ namespace Oxide.Plugins
             SendReply(arg, $"Reset progress for player {targetId}");
         }
         
+        [ConsoleCommand("kd.zombies")]
+        private void CmdZombies(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null)
+            {
+                SendReply(arg, "This command must be run by a player");
+                return;
+            }
+            
+            if (!permission.UserHasPermission(player.UserIDString, PERMISSION_ADMIN))
+            {
+                SendReply(arg, "You don't have permission to use this command");
+                return;
+            }
+            
+            if (!arg.HasArgs(1))
+            {
+                SendReply(arg, "Usage: kd.zombies <start|stop|status|spawn> [profile] [spawnset]");
+                SendReply(arg, "  start [profile] [spawnset] - Start zombie wave mode at your location");
+                SendReply(arg, "  stop - Stop zombie wave mode");
+                SendReply(arg, "  status - Check if zombie mode is active");
+                SendReply(arg, "  spawn <amount> [profile] - Spawn zombies at your location");
+                return;
+            }
+            
+            string action = arg.Args[0].ToLower();
+            
+            switch (action)
+            {
+                case "start":
+                    string profile = arg.HasArgs(2) ? arg.Args[1] : _config.ZombiesProfileName;
+                    string spawnSet = arg.HasArgs(3) ? arg.Args[2] : _config.ZombiesSpawnSetName;
+                    
+                    if (_zombieIntegration.StartWaveMode(player.transform.position, profile, spawnSet))
+                    {
+                        SendReply(arg, $"Zombie wave mode started with profile '{profile}'!");
+                    }
+                    else
+                    {
+                        SendReply(arg, "Failed to start zombie wave mode. Is NecroZombies loaded?");
+                    }
+                    break;
+                    
+                case "stop":
+                    if (_zombieIntegration.StopWaveMode())
+                    {
+                        SendReply(arg, "Zombie wave mode stopped.");
+                    }
+                    else
+                    {
+                        SendReply(arg, "Failed to stop zombie wave mode. Is NecroZombies loaded?");
+                    }
+                    break;
+                    
+                case "status":
+                    bool active = _zombieIntegration.IsWaveModeActive();
+                    int count = _zombieIntegration.GetActiveZombieCount();
+                    SendReply(arg, $"Zombie mode active: {active}, Active zombies: {count}");
+                    break;
+                    
+                case "spawn":
+                    int amount = arg.HasArgs(2) && int.TryParse(arg.Args[1], out int a) ? a : 5;
+                    string spawnProfile = arg.HasArgs(3) ? arg.Args[2] : _config.ZombiesProfileName;
+                    
+                    int spawned = _zombieIntegration.SpawnHordeAt(player.transform.position, amount, spawnProfile);
+                    if (spawned > 0)
+                    {
+                        SendReply(arg, $"Spawned {spawned} zombies!");
+                    }
+                    else
+                    {
+                        SendReply(arg, "Failed to spawn zombies. Is NecroZombies loaded?");
+                    }
+                    break;
+                    
+                default:
+                    SendReply(arg, "Unknown action. Use: start, stop, status, or spawn");
+                    break;
+            }
+        }
+        
         #endregion
         
         #region Chat Commands
@@ -1207,6 +1958,8 @@ namespace Oxide.Plugins
                 SendReply(player, "KillaDome Commands:\n" +
                     "/kd open - Open lobby UI\n" +
                     "/kd stats - View your stats\n" +
+                    "/kd mode - Check current game mode\n" +
+                    "/kd leave - Leave current match\n" +
                     "/kd help - Show this help");
                 return;
             }
@@ -1225,10 +1978,207 @@ namespace Oxide.Plugins
                             $"VIP Status: {(session.Profile.IsVIP ? "Active" : "Inactive")}");
                     }
                     break;
+                
+                case "leave":
+                    _gameModeSystem.PlayerLeave(player);
+                    break;
+                    
+                case "mode":
+                    var modeSession = GetSession(player.userID);
+                    if (modeSession != null)
+                    {
+                        string currentMode = modeSession.SelectedGameMode == GameMode.None ? "Lobby" : modeSession.SelectedGameMode.ToString();
+                        bool inMatch = modeSession.IsInMatch;
+                        bool spectating = modeSession.IsSpectating;
+                        
+                        SendReply(player, $"<color=#FFD700>Current Mode:</color> {currentMode}\n" +
+                            $"In Match: {(inMatch ? "<color=#00ff00>Yes</color>" : "<color=#ff5555>No</color>")}\n" +
+                            (spectating ? "<color=#FF8800>Spectating until next wave</color>" : ""));
+                    }
+                    break;
+                
+                case "endzombies":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to end matches.");
+                        break;
+                    }
+                    _gameModeSystem.EndZombiesMatch();
+                    SendReply(player, "<color=#FF4444>Zombies match ended!</color>");
+                    break;
+                    
+                case "endnormal":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to end matches.");
+                        break;
+                    }
+                    _gameModeSystem.EndNormalMatch();
+                    SendReply(player, "<color=#44FF44>Normal match ended!</color>");
+                    break;
+                    
+                case "zombies":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to control zombies.");
+                        break;
+                    }
+                    
+                    if (args.Length < 2)
+                    {
+                        SendReply(player, "Usage: /kd zombies <start|stop|status>\n" +
+                            "  start [profile] - Start zombie wave mode\n" +
+                            "  stop - Stop zombie wave mode\n" +
+                            "  status - Check zombie mode status");
+                        break;
+                    }
+                    
+                    string zombieAction = args[1].ToLower();
+                    switch (zombieAction)
+                    {
+                        case "start":
+                            string zombieProfile = args.Length >= 3 ? args[2] : _config.ZombiesProfileName;
+                            if (_zombieIntegration.StartWaveMode(player.transform.position, zombieProfile, _config.ZombiesSpawnSetName))
+                            {
+                                SendReply(player, $"<color=#00ff00>Zombie wave mode started!</color> Profile: {zombieProfile}");
+                            }
+                            else
+                            {
+                                SendReply(player, "<color=#ff0000>Failed to start zombie wave mode. Is NecroZombies loaded?</color>");
+                            }
+                            break;
+                            
+                        case "stop":
+                            if (_zombieIntegration.StopWaveMode())
+                            {
+                                SendReply(player, "<color=#ff5555>Zombie wave mode stopped.</color>");
+                            }
+                            else
+                            {
+                                SendReply(player, "<color=#ff0000>Failed to stop zombie wave mode.</color>");
+                            }
+                            break;
+                            
+                        case "status":
+                            bool isActive = _zombieIntegration.IsWaveModeActive();
+                            int zombieCount = _zombieIntegration.GetActiveZombieCount();
+                            SendReply(player, $"Zombie mode: {(isActive ? "<color=#00ff00>ACTIVE</color>" : "<color=#ff5555>INACTIVE</color>")}\n" +
+                                $"Active zombies: {zombieCount}");
+                            break;
+                            
+                        default:
+                            SendReply(player, "Unknown zombie action. Use: start, stop, status");
+                            break;
+                    }
+                    break;
+                    
+                case "setteleporter":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to set teleporters.");
+                        break;
+                    }
+                    
+                    if (args.Length < 2)
+                    {
+                        SendReply(player, "Usage: /kd setteleporter <zombies|normal>\n" +
+                            "Sets the teleporter position to your current location.");
+                        break;
+                    }
+                    
+                    string teleporterType = args[1].ToLower();
+                    Vector3 playerPos = player.transform.position;
+                    
+                    if (teleporterType == "zombies")
+                    {
+                        _config.ZombiesTeleporterPosition = playerPos;
+                        SaveConfig();
+                        _gameModeSystem.RefreshTeleporterTiles();
+                        SendReply(player, $"<color=#FF4444>Zombies teleporter</color> set to {playerPos}");
+                    }
+                    else if (teleporterType == "normal")
+                    {
+                        _config.NormalTeleporterPosition = playerPos;
+                        SaveConfig();
+                        _gameModeSystem.RefreshTeleporterTiles();
+                        SendReply(player, $"<color=#44FF44>Normal teleporter</color> set to {playerPos}");
+                    }
+                    else
+                    {
+                        SendReply(player, "Unknown teleporter type. Use: zombies, normal");
+                    }
+                    break;
+                    
+                case "setspectate":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to set spectate position.");
+                        break;
+                    }
+                    
+                    _config.SpectatePosition = player.transform.position;
+                    SaveConfig();
+                    SendReply(player, $"<color=#FFD700>Spectate position</color> set to {player.transform.position}");
+                    break;
+                    
+                case "setarena":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to set arena positions.");
+                        break;
+                    }
+                    
+                    if (args.Length < 2)
+                    {
+                        SendReply(player, "Usage: /kd setarena <zombies|normal>\n" +
+                            "Sets the arena spawn position for that mode.");
+                        break;
+                    }
+                    
+                    string arenaType = args[1].ToLower();
+                    
+                    if (arenaType == "zombies")
+                    {
+                        _config.ZombiesArenaPosition = player.transform.position;
+                        SaveConfig();
+                        SendReply(player, $"<color=#FF4444>Zombies arena</color> set to {player.transform.position}");
+                    }
+                    else if (arenaType == "normal")
+                    {
+                        _config.NormalArenaPosition = player.transform.position;
+                        SaveConfig();
+                        SendReply(player, $"<color=#44FF44>Normal arena</color> set to {player.transform.position}");
+                    }
+                    else
+                    {
+                        SendReply(player, "Unknown arena type. Use: zombies, normal");
+                    }
+                    break;
+                    
+                case "spawntiles":
+                    if (!player.IsAdmin)
+                    {
+                        SendReply(player, "You must be an admin to spawn tiles.");
+                        break;
+                    }
+                    
+                    _gameModeSystem.RefreshTeleporterTiles();
+                    SendReply(player, "<color=#00FF00>Teleporter spheres refreshed!</color>");
+                    break;
                     
                 case "help":
                     SendReply(player, "KillaDome - Full COD Experience\n" +
-                        "Use /kd open to access the lobby");
+                        "Use /kd open to access the lobby\n" +
+                        "/kd mode - Check current game mode\n" +
+                        "Walk into teleporter zones to join game modes!\n" +
+                        (player.IsAdmin ? "\n<color=#FFD700>Admin Commands:</color>\n" +
+                            "/kd setteleporter <zombies|normal> - Set teleporter position\n" +
+                            "/kd setspectate - Set spectate/skybox position\n" +
+                            "/kd setarena <zombies|normal> - Set arena spawn position\n" +
+                            "/kd spawntiles - Refresh teleporter spheres\n" +
+                            "/kd zombies - Control zombie wave mode\n" +
+                            "/kd endzombies - End zombies match\n" +
+                            "/kd endnormal - End normal match" : ""));
                     break;
                     
                 default:
@@ -1241,12 +2191,79 @@ namespace Oxide.Plugins
         
         #region UI Console Commands
         
+        [ConsoleCommand("kd.confirmmode")]
+        private void CmdConfirmMode(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !arg.HasArgs(1)) return;
+            
+            int modeInt;
+            if (!int.TryParse(arg.Args[0], out modeInt)) return;
+            
+            GameMode mode = (GameMode)modeInt;
+            if (mode != GameMode.Zombies && mode != GameMode.Normal) return;
+            
+            _gameModeSystem.ConfirmModeSelection(player, mode);
+        }
+        
+        [ConsoleCommand("kd.cancelmode")]
+        private void CmdCancelMode(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            
+            _gameModeSystem.CloseConfirmationUI(player);
+        }
+        
+        [ConsoleCommand("kd.host.forcestart")]
+        private void CmdHostForceStart(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            
+            _gameModeSystem.HostForceStart(player);
+        }
+        
+        [ConsoleCommand("kd.host.endmatch")]
+        private void CmdHostEndMatch(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            
+            _gameModeSystem.HostEndMatch(player);
+        }
+        
+        [ConsoleCommand("kd.leave")]
+        private void CmdLeaveMatch(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            
+            _gameModeSystem.PlayerLeave(player);
+        }
+        
         [ConsoleCommand("killadome.close")]
         private void CmdUIClose(ConsoleSystem.Arg arg)
         {
             var player = arg.Player();
             if (player == null) return;
             _lobbyUI.DestroyUI(player);
+        }
+        
+        [ConsoleCommand("matchstats.close")]
+        private void CmdMatchStatsClose(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            CuiHelper.DestroyUi(player, "MatchEndStats");
+        }
+        
+        [ConsoleCommand("kd.buylife")]
+        private void CmdBuyLife(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            _gameModeSystem.TryBuyLife(player);
         }
         
         [ConsoleCommand("killadome.tab")]
@@ -1994,6 +3011,219 @@ namespace Oxide.Plugins
             }
         }
         
+        [ChatCommand("kdgivetokens")]
+        private void CmdGiveTokens(BasePlayer player, string command, string[] args)
+        {
+            if (player == null) return;
+            if (!player.IsAdmin)
+            {
+                SendReply(player, "You don't have permission to use this command.");
+                return;
+            }
+            
+            if (args.Length < 2)
+            {
+                SendReply(player, "Usage: /kdgivetokens <player> <amount>");
+                SendReply(player, "Example: /kdgivetokens PlayerName 1000");
+                return;
+            }
+            
+            var target = BasePlayer.Find(args[0]);
+            if (target == null)
+            {
+                SendReply(player, $"Player '{args[0]}' not found.");
+                return;
+            }
+            
+            int amount;
+            if (!int.TryParse(args[1], out amount))
+            {
+                SendReply(player, "Invalid amount. Please enter a number.");
+                return;
+            }
+            
+            // Get or create session for target player
+            var targetSession = GetSession(target.userID);
+            if (targetSession == null)
+            {
+                // Create session if it doesn't exist (player not fully connected yet)
+                if (_saveManager == null)
+                {
+                    SendReply(player, "Save manager not initialized. Please try again.");
+                    return;
+                }
+                var profile = _saveManager.LoadPlayerProfile(target.userID);
+                targetSession = new PlayerSession(target, profile);
+                _activeSessions[target.userID] = targetSession;
+            }
+            
+            _tokenEconomy.AwardTokens(target.userID, amount);
+            SendReply(player, $"<color=#00FF00>✓</color> Gave {amount} Blood Tokens to {target.displayName}. New balance: {targetSession.Profile.Tokens}");
+            target.ChatMessage($"<color=#00FF00>+{amount} Blood Tokens</color> received from admin!");
+        }
+        
+        // Owner Setup GUI - Visual admin panel for all setup commands
+        [ChatCommand("kdsetup")]
+        private void CmdSetup(BasePlayer player, string command, string[] args)
+        {
+            if (player == null) return;
+            if (!player.IsAdmin)
+            {
+                SendReply(player, "You must be an admin to use this command.");
+                return;
+            }
+            
+            ShowOwnerSetupUI(player);
+        }
+        
+        private void ShowOwnerSetupUI(BasePlayer player)
+        {
+            var container = new CuiElementContainer();
+            string panelName = "KDSetupUI";
+            
+            // Destroy existing UI
+            CuiHelper.DestroyUi(player, panelName);
+            
+            // Main panel - dark background
+            container.Add(new CuiPanel
+            {
+                CursorEnabled = true,
+                RectTransform = { AnchorMin = "0.15 0.1", AnchorMax = "0.85 0.9" },
+                Image = { Color = "0.1 0.1 0.1 0.95" }
+            }, "Overlay", panelName);
+            
+            // Header
+            container.Add(new CuiPanel
+            {
+                RectTransform = { AnchorMin = "0 0.92", AnchorMax = "1 1" },
+                Image = { Color = "0.8 0.2 0.2 1" }
+            }, panelName, "SetupHeader");
+            
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "⚙️ KILLADOME OWNER SETUP", Align = TextAnchor.MiddleCenter, FontSize = 24, Color = "1 1 1 1" },
+                RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" }
+            }, "SetupHeader");
+            
+            // Close button
+            container.Add(new CuiButton
+            {
+                Button = { Color = "0.5 0.1 0.1 1", Command = "kdsetup.close" },
+                Text = { Text = "✕", Align = TextAnchor.MiddleCenter, FontSize = 20, Color = "1 1 1 1" },
+                RectTransform = { AnchorMin = "0.95 0.92", AnchorMax = "1 1" }
+            }, panelName);
+            
+            // === SECTION: KillaDome Setup ===
+            AddSetupSection(container, panelName, "KillaDome Setup", 0.80f, new[]
+            {
+                ("Set Lobby Spawn", "kdlobby set", "Sets where players spawn in lobby"),
+                ("Set Spectate", "kd setspectate", "Sets spectator camera position"),
+                ("Set Arena (Zombies)", "kd setarena zombies", "Sets player spawn in zombie arena"),
+                ("Set Teleporter", "kd setteleporter zombies", "Sets zombie mode teleporter location"),
+                ("Spawn Teleporter Tiles", "kd spawntiles", "Refreshes teleporter orbs in lobby")
+            });
+            
+            // === SECTION: Zombie Spawns ===
+            AddSetupSection(container, panelName, "Zombie Spawn Setup", 0.58f, new[]
+            {
+                ("Add Spawn Point", "zspawnadd_prompt", "Add zombie spawn at your position"),
+                ("Debug Spawns", "zspawndebug", "List all configured spawn points"),
+                ("Create Zone", "zzone_prompt", "Create a zone for spawn sets"),
+                ("List Zones", "zzone list", "Show all zones and their status")
+            });
+            
+            // === SECTION: Perks & Features ===
+            AddSetupSection(container, panelName, "Perks & Features", 0.36f, new[]
+            {
+                ("Spawn Juggernog", "spawnperk jug", "Spawn Juggernog perk machine"),
+                ("Spawn Speed Cola", "spawnperk speed", "Spawn Speed Cola perk machine"),
+                ("Spawn Quick Revive", "spawnperk revive", "Spawn Quick Revive perk machine"),
+                ("Spawn Double Tap", "spawnperk double", "Spawn Double Tap perk machine")
+            });
+            
+            // === SECTION: Mystery Box & Doors ===
+            AddSetupSection(container, panelName, "Mystery Box & Doors", 0.14f, new[]
+            {
+                ("Add Mystery Box Spawn", "mbox_addspawn", "Add Mystery Box spawn location"),
+                ("List Mystery Spawns", "mbox_listspawns", "Show all Mystery Box locations"),
+                ("Reset Zombie Doors", "zdoor reset", "Reset/respawn all zombie doors"),
+                ("Force Spawn Boxes", "mbox_forcespawn", "Force spawn Mystery Boxes now")
+            });
+            
+            CuiHelper.AddUi(player, container);
+        }
+        
+        private void AddSetupSection(CuiElementContainer container, string parent, string title, float topAnchor, (string label, string command, string tooltip)[] buttons)
+        {
+            float height = 0.18f;
+            string sectionName = $"Section_{title.Replace(" ", "")}";
+            
+            // Section title
+            container.Add(new CuiLabel
+            {
+                Text = { Text = $"▸ {title}", Align = TextAnchor.MiddleLeft, FontSize = 16, Color = "1 0.8 0.2 1" },
+                RectTransform = { AnchorMin = $"0.02 {topAnchor}", AnchorMax = $"0.98 {topAnchor + 0.04f}" }
+            }, parent);
+            
+            // Buttons grid (2 columns)
+            float buttonWidth = 0.48f;
+            float buttonHeight = 0.035f;
+            float startY = topAnchor - 0.02f;
+            
+            for (int i = 0; i < buttons.Length; i++)
+            {
+                int col = i % 2;
+                int row = i / 2;
+                float x = col == 0 ? 0.02f : 0.51f;
+                float y = startY - (row * (buttonHeight + 0.01f));
+                
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.2 0.4 0.6 1", Command = $"kdsetup.run {buttons[i].command}" },
+                    Text = { Text = buttons[i].label, Align = TextAnchor.MiddleCenter, FontSize = 12, Color = "1 1 1 1" },
+                    RectTransform = { AnchorMin = $"{x} {y - buttonHeight}", AnchorMax = $"{x + buttonWidth} {y}" }
+                }, parent);
+            }
+        }
+        
+        [ConsoleCommand("kdsetup.close")]
+        private void CmdSetupClose(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            CuiHelper.DestroyUi(player, "KDSetupUI");
+        }
+        
+        [ConsoleCommand("kdsetup.run")]
+        private void CmdSetupRun(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !player.IsAdmin) return;
+            
+            string fullCommand = string.Join(" ", arg.Args);
+            
+            // Handle special prompt commands
+            if (fullCommand == "zspawnadd_prompt")
+            {
+                CuiHelper.DestroyUi(player, "KDSetupUI");
+                SendReply(player, "<color=#ffcc55>Enter spawn set name:</color> /zspawnadd <setname>");
+                SendReply(player, "Example: /zspawnadd arena1");
+                return;
+            }
+            if (fullCommand == "zzone_prompt")
+            {
+                CuiHelper.DestroyUi(player, "KDSetupUI");
+                SendReply(player, "<color=#ffcc55>Zone Commands:</color>");
+                SendReply(player, "  /zzone create <name> - Create a zone");
+                SendReply(player, "  /zzone linkdoor <zone> <doorId> - Link zone to door");
+                return;
+            }
+            
+            // Close UI and run the command
+            CuiHelper.DestroyUi(player, "KDSetupUI");
+            player.SendConsoleCommand($"chat.say /{fullCommand}");
+        }
+        
         [ChatCommand("dice")]
         private void CmdDiceGame(BasePlayer player, string command, string[] args)
         {
@@ -2098,6 +3328,16 @@ namespace Oxide.Plugins
         
         #region Data Models
         
+        /// <summary>
+        /// Game mode enum for teleporter selection
+        /// </summary>
+        public enum GameMode
+        {
+            None,       // In lobby, no mode selected
+            Zombies,    // Black Ops Zombies mode
+            Normal      // Normal PvP/Deathmatch mode
+        }
+        
         internal class PlayerSession
         {
             public BasePlayer Player { get; set; }
@@ -2114,6 +3354,13 @@ namespace Oxide.Plugins
             public DateTime LastDiceGame { get; set; } // Cooldown for dice game
             public string SelectedLoadoutTab { get; set; } // "weapons" or "outfit"
             
+            // ===== GAME MODE TELEPORTER SYSTEM =====
+            public GameMode SelectedGameMode { get; set; } // Which game mode the player selected
+            public bool IsSpectating { get; set; } // True if player is spectating (zombies mode waiting for respawn)
+            public bool CanLeaveMatch { get; set; } // Whether player can leave (false during match)
+            public DateTime LastTeleporterEntry { get; set; } // Prevent spam entry
+            public bool IsBuyingLife { get; set; } // Flag to bypass spectate spawn when buying life
+            
             internal PlayerSession(BasePlayer player, PlayerProfile profile)
             {
                 Player = player;
@@ -2126,7 +3373,28 @@ namespace Oxide.Plugins
                 SkinsStorePage = 0; // Start at first page
                 SelectedGunForSkins = ""; // Will default to first gun when opening skin store
                 SelectedLoadoutTab = "weapons"; // Default to weapons tab
+                SelectedGameMode = GameMode.None; // Not in any game mode
+                IsSpectating = false;
+                CanLeaveMatch = true;
+                IsBuyingLife = false;
+                
+                // Set display name from player for leaderboard
+                if (player != null && !string.IsNullOrEmpty(player.displayName))
+                {
+                    Profile.DisplayName = player.displayName;
+                }
             }
+        }
+        
+        /// <summary>
+        /// Leaderboard entry for displaying player stats
+        /// </summary>
+        private class LeaderboardEntry
+        {
+            public ulong SteamID { get; set; }
+            public string DisplayName { get; set; }
+            public int HighestWave { get; set; }
+            public int ZombieKills { get; set; }
         }
         
         public class PlayerProfile
@@ -2144,6 +3412,14 @@ namespace Oxide.Plugins
             public int TotalDeaths { get; set; }
             public int MatchesPlayed { get; set; }
             public DateTime LastDailyRefill { get; set; }
+            
+            // ===== NEW STATS FOR ZOMBIES MODE =====
+            public int ZombieKills { get; set; }           // Total zombie kills across all matches
+            public int HighestWave { get; set; }           // Highest wave reached (for leaderboard)
+            public int TotalTokensEarned { get; set; }     // Lifetime tokens earned
+            public int CurrentMatchKills { get; set; }     // Kills in current match (reset each match)
+            public int CurrentMatchTokens { get; set; }    // Tokens earned in current match
+            public string DisplayName { get; set; }        // Player display name for leaderboards
             
             public PlayerProfile()
             {
@@ -2249,6 +3525,20 @@ namespace Oxide.Plugins
                 }
                 
                 _plugin.Puts($"Match {_currentMatch.MatchId} started with {_matchQueue.Count} players");
+                
+                // Start zombie wave mode for the Black Ops zombies experience
+                if (_config.EnableZombiesMode && _config.ZombiesAutoStartOnMatch)
+                {
+                    Vector3 spawnCenter = _config.ArenaSpawnPositions.Count > 0 
+                        ? _config.ArenaSpawnPositions[0] 
+                        : new Vector3(0, 100, 500);
+                    
+                    if (_plugin._zombieIntegration.StartWaveMode(spawnCenter, _config.ZombiesProfileName, _config.ZombiesSpawnSetName))
+                    {
+                        _plugin.Puts("Black Ops zombie wave mode activated!");
+                    }
+                }
+                
                 _matchQueue.Clear();
             }
             
@@ -2261,6 +3551,13 @@ namespace Oxide.Plugins
                 
                 _currentMatch.IsActive = false;
                 _currentMatch.EndTime = DateTime.UtcNow;
+                
+                // Stop zombie wave mode when match ends
+                if (_config.EnableZombiesMode)
+                {
+                    _plugin._zombieIntegration.StopWaveMode();
+                    _plugin._zombieIntegration.KillAllZombies();
+                }
                 
                 // Return players to lobby
                 foreach (var player in BasePlayer.activePlayerList)
@@ -2324,7 +3621,7 @@ namespace Oxide.Plugins
             
             public void ShowLobbyUI(BasePlayer player)
             {
-                ShowLobbyUIWithTab(player, "play");
+                ShowLobbyUIWithTab(player, "welcome");
             }
             
             public void ShowLobbyUIWithTab(BasePlayer player, string tab)
@@ -2369,11 +3666,11 @@ namespace Oxide.Plugins
                     RectTransform = { AnchorMin = "0 0.88", AnchorMax = "1 0.94" }
                 }, UI_MAIN, "TabBar");
                 
-                AddTabButtonFullscreen(container, "TabBar", "PLAY", 0, tab == "play", "killadome.tab play");
+                // Removed PLAY tab - only show WELCOME, LOADOUTS, STORE, STATS
+                AddTabButtonFullscreen(container, "TabBar", "WELCOME", 0, tab == "welcome", "killadome.tab welcome");
                 AddTabButtonFullscreen(container, "TabBar", "LOADOUTS", 1, tab == "loadouts", "killadome.tab loadouts");
                 AddTabButtonFullscreen(container, "TabBar", "STORE", 2, tab == "store", "killadome.tab store");
                 AddTabButtonFullscreen(container, "TabBar", "STATS", 3, tab == "stats", "killadome.tab stats");
-                AddTabButtonFullscreen(container, "TabBar", "SETTINGS", 4, tab == "settings", "killadome.tab settings");
                 
                 // Close button - top right corner
                 container.Add(new CuiButton
@@ -2393,8 +3690,8 @@ namespace Oxide.Plugins
                 // Show appropriate tab content
                 switch (tab.ToLower())
                 {
-                    case "play":
-                        ShowPlayTab(container, player);
+                    case "welcome":
+                        ShowWelcomeTab(container, player);
                         break;
                     case "loadouts":
                         ShowLoadoutsTab(container, player);
@@ -2409,7 +3706,7 @@ namespace Oxide.Plugins
                         ShowSettingsTab(container, player);
                         break;
                     default:
-                        ShowPlayTab(container, player);
+                        ShowWelcomeTab(container, player);
                         break;
                 }
                 
@@ -2451,99 +3748,133 @@ namespace Oxide.Plugins
                 }, parent);
             }
             
-            private void ShowPlayTab(CuiElementContainer container, BasePlayer player)
+            private void ShowWelcomeTab(CuiElementContainer container, BasePlayer player)
             {
-                // Main play section header
+                // Welcome header with game title
                 container.Add(new CuiPanel
                 {
                     Image = { Color = "0.08 0.08 0.12 0.9" },
-                    RectTransform = { AnchorMin = "0.02 0.85", AnchorMax = "0.98 0.98" }
-                }, UI_TAB_CONTAINER, "PlayHeader");
+                    RectTransform = { AnchorMin = "0.02 0.88", AnchorMax = "0.98 0.98" }
+                }, UI_TAB_CONTAINER, "WelcomeHeader");
                 
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = "━━━ READY FOR BATTLE? ━━━", FontSize = 32, Align = TextAnchor.MiddleCenter, Color = "1 0.7 0.2 1" },
+                    Text = { Text = "🎮 WELCOME TO KILLADOME 🎮", FontSize = 28, Align = TextAnchor.MiddleCenter, Color = "1 0.7 0.2 1" },
                     RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" }
-                }, "PlayHeader");
+                }, "WelcomeHeader");
                 
-                // Main content area
-                container.Add(new CuiPanel
-                {
-                    Image = { Color = "0.06 0.06 0.08 0.9" },
-                    RectTransform = { AnchorMin = "0.15 0.25", AnchorMax = "0.85 0.80" }
-                }, UI_TAB_CONTAINER, "PlayContent");
-                
-                // Decorative border
-                container.Add(new CuiPanel
-                {
-                    Image = { Color = "0.3 0.8 0.4 0.5" },
-                    RectTransform = { AnchorMin = "0 0.98", AnchorMax = "1 1" }
-                }, "PlayContent");
-                
-                container.Add(new CuiPanel
-                {
-                    Image = { Color = "0.3 0.8 0.4 0.5" },
-                    RectTransform = { AnchorMin = "0 0", AnchorMax = "1 0.02" }
-                }, "PlayContent");
-                
-                // Join Queue button - large and centered
-                container.Add(new CuiButton
-                {
-                    Button = { Color = "0.2 0.7 0.3 0.95", Command = "killadome.joinqueue" },
-                    RectTransform = { AnchorMin = "0.25 0.50", AnchorMax = "0.75 0.75" },
-                    Text = { Text = "⚔ JOIN QUEUE ⚔", FontSize = 28, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" }
-                }, "PlayContent");
-                
-                // Status indicator
-                container.Add(new CuiLabel
-                {
-                    Text = { Text = "Click to enter the battlefield", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
-                    RectTransform = { AnchorMin = "0.1 0.38", AnchorMax = "0.9 0.48" }
-                }, "PlayContent");
-                
-                // Stats preview
+                // Starting tokens info
                 var session = _plugin.GetSession(player.userID);
-                if (session != null)
-                {
-                    // Stats panel
-                    container.Add(new CuiPanel
-                    {
-                        Image = { Color = "0.1 0.08 0.05 0.9" },
-                        RectTransform = { AnchorMin = "0.25 0.08", AnchorMax = "0.75 0.32" }
-                    }, "PlayContent", "StatsPreview");
-                    
-                    container.Add(new CuiLabel
-                    {
-                        Text = { Text = "◆ YOUR STATS ◆", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 0.8 0.2 1" },
-                        RectTransform = { AnchorMin = "0 0.70", AnchorMax = "1 0.95" }
-                    }, "StatsPreview");
-                    
-                    container.Add(new CuiLabel
-                    {
-                        Text = { Text = $"Blood Tokens: {session.Profile.Tokens}", FontSize = 18, Align = TextAnchor.MiddleCenter, Color = "1 0.9 0.6 1" },
-                        RectTransform = { AnchorMin = "0 0.40", AnchorMax = "1 0.65" }
-                    }, "StatsPreview");
-                    
-                    float kd = session.Profile.TotalDeaths > 0 ? (float)session.Profile.TotalKills / session.Profile.TotalDeaths : session.Profile.TotalKills;
-                    container.Add(new CuiLabel
-                    {
-                        Text = { Text = $"K/D: {kd:F2}  |  Kills: {session.Profile.TotalKills}  |  Deaths: {session.Profile.TotalDeaths}", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.8 0.8 0.8 1" },
-                        RectTransform = { AnchorMin = "0 0.10", AnchorMax = "1 0.35" }
-                    }, "StatsPreview");
-                }
+                int tokens = session?.Profile?.Tokens ?? 500;
                 
-                // Footer with tips
                 container.Add(new CuiPanel
                 {
-                    Image = { Color = "0.06 0.06 0.08 0.8" },
-                    RectTransform = { AnchorMin = "0.02 0.02", AnchorMax = "0.98 0.10" }
-                }, UI_TAB_CONTAINER, "PlayFooter");
+                    Image = { Color = "0.12 0.25 0.12 0.95" },
+                    RectTransform = { AnchorMin = "0.25 0.78", AnchorMax = "0.75 0.86" }
+                }, UI_TAB_CONTAINER, "TokensInfo");
                 
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = "💡 TIP: Customize your loadout in the LOADOUTS tab before entering battle!", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.8 0.9 1" },
+                    Text = { Text = $"💰 You have {tokens} Blood Tokens! 💰", FontSize = 18, Align = TextAnchor.MiddleCenter, Color = "0.8 1 0.6 1" },
                     RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" }
-                }, "PlayFooter");
+                }, "TokensInfo");
+                
+                // Main content - 3 columns for tabs explanation
+                float colWidth = 0.30f;
+                float colSpacing = 0.02f;
+                float startX = 0.03f;
+                
+                // Column 1: STORE
+                float col1X = startX;
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.15 0.12 0.08 0.95" },
+                    RectTransform = { AnchorMin = $"{col1X} 0.30", AnchorMax = $"{col1X + colWidth} 0.75" }
+                }, UI_TAB_CONTAINER, "StoreCol");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "🛒 STORE", FontSize = 20, Align = TextAnchor.MiddleCenter, Color = "0.3 0.8 1 1" },
+                    RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
+                }, "StoreCol");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "Buy weapons, skins,\nand armor with\nBlood Tokens!\n\n• Guns\n• Gun Skins\n• Clothing\n• Armor", FontSize = 13, Align = TextAnchor.UpperCenter, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0.05 0.05", AnchorMax = "0.95 0.82" }
+                }, "StoreCol");
+                
+                // Column 2: LOADOUTS
+                float col2X = col1X + colWidth + colSpacing;
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.15 0.12 0.08 0.95" },
+                    RectTransform = { AnchorMin = $"{col2X} 0.30", AnchorMax = $"{col2X + colWidth} 0.75" }
+                }, UI_TAB_CONTAINER, "LoadoutsCol");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "🎒 LOADOUTS", FontSize = 20, Align = TextAnchor.MiddleCenter, Color = "0.9 0.6 0.2 1" },
+                    RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
+                }, "LoadoutsCol");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "Customize your\nweapon loadout!\n\n• Drag & drop guns\n• Set your gear\n• Save loadouts\n• Ready for battle!", FontSize = 13, Align = TextAnchor.UpperCenter, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0.05 0.05", AnchorMax = "0.95 0.82" }
+                }, "LoadoutsCol");
+                
+                // Column 3: PLAY (Zombies only)
+                float col3X = col2X + colWidth + colSpacing;
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.15 0.12 0.08 0.95" },
+                    RectTransform = { AnchorMin = $"{col3X} 0.30", AnchorMax = $"{col3X + colWidth} 0.75" }
+                }, UI_TAB_CONTAINER, "PlayCol");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "⚔️ ZOMBIES", FontSize = 20, Align = TextAnchor.MiddleCenter, Color = "0.9 0.3 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
+                }, "PlayCol");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "Join the fight!\n\n<color=#FF4444>RED ORB</color>\nStep into the orb\nto join Zombies Mode\n\n🧟 Survive the waves!", FontSize = 13, Align = TextAnchor.UpperCenter, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0.05 0.05", AnchorMax = "0.95 0.82" }
+                }, "PlayCol");
+                
+                // Game flow explanation at bottom
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.06 0.06 0.10 0.95" },
+                    RectTransform = { AnchorMin = "0.03 0.02", AnchorMax = "0.97 0.27" }
+                }, UI_TAB_CONTAINER, "GameFlow");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "📋 HOW TO PLAY", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 0.8 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.82", AnchorMax = "1 0.98" }
+                }, "GameFlow");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "1️⃣ Use the STORE tab to buy guns, skins & armor\n2️⃣ Use the LOADOUTS tab to equip your weapons\n3️⃣ Walk into the RED teleporter orb in the lobby to join Zombies Mode\n4️⃣ Kill zombies to earn more Blood Tokens! 🩸", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0.05 0.10", AnchorMax = "0.95 0.78" }
+                }, "GameFlow");
+                
+                // Helpful commands
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "Commands: /kd open (this menu) • /kd leave (leave match) • /kd mode (check status)", FontSize = 11, Align = TextAnchor.MiddleCenter, Color = "0.6 0.6 0.6 1" },
+                    RectTransform = { AnchorMin = "0.05 0.01", AnchorMax = "0.95 0.10" }
+                }, "GameFlow");
+            }
+            
+            private void ShowPlayTab(CuiElementContainer container, BasePlayer player)
+            {
+                // Redirect to Welcome tab since PLAY tab is removed
+                ShowWelcomeTab(container, player);
             }
             
             private void ShowLoadoutsTab(CuiElementContainer container, BasePlayer player)
@@ -4136,16 +5467,22 @@ namespace Oxide.Plugins
                 
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = "━━━ YOUR STATS ━━━", FontSize = 26, Align = TextAnchor.MiddleCenter, Color = "1 0.85 0.4 1" },
+                    Text = { Text = "━━━ YOUR STATS & LEADERBOARD ━━━", FontSize = 26, Align = TextAnchor.MiddleCenter, Color = "1 0.85 0.4 1" },
                     RectTransform = { AnchorMin = "0 0.1", AnchorMax = "1 1" }
                 }, "StatsHeader");
                 
-                // Main stats container
+                // LEFT SIDE - Your Stats
                 container.Add(new CuiPanel
                 {
                     Image = { Color = "0.04 0.04 0.06 0.9" },
-                    RectTransform = { AnchorMin = "0.15 0.10", AnchorMax = "0.85 0.85" }
+                    RectTransform = { AnchorMin = "0.02 0.10", AnchorMax = "0.48 0.85" }
                 }, UI_TAB_CONTAINER, "StatsContent");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "📊 YOUR STATS", FontSize = 18, Align = TextAnchor.MiddleCenter, Color = "1 0.8 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.90", AnchorMax = "1 0.98" }
+                }, "StatsContent");
                 
                 var session = _plugin.GetSession(player.userID);
                 if (session != null)
@@ -4153,23 +5490,25 @@ namespace Oxide.Plugins
                     var profile = session.Profile;
                     float kd = profile.TotalDeaths > 0 ? (float)profile.TotalKills / profile.TotalDeaths : profile.TotalKills;
                     
-                    // Stats grid - larger cards
+                    // Stats grid - 2 columns, 4 rows
                     var statsData = new[] {
-                        new { Label = "KILLS", Value = profile.TotalKills.ToString(), Color = "0.3 0.8 0.4" },
-                        new { Label = "DEATHS", Value = profile.TotalDeaths.ToString(), Color = "0.8 0.3 0.3" },
-                        new { Label = "K/D RATIO", Value = kd.ToString("F2"), Color = "0.4 0.7 1.0" },
-                        new { Label = "BLOOD TOKENS", Value = profile.Tokens.ToString(), Color = "1.0 0.7 0.2" },
-                        new { Label = "MATCHES PLAYED", Value = profile.MatchesPlayed.ToString(), Color = "0.7 0.5 1.0" },
-                        new { Label = "VIP STATUS", Value = profile.IsVIP ? "ACTIVE" : "INACTIVE", Color = profile.IsVIP ? "0.3 1.0 0.5" : "0.5 0.5 0.5" }
+                        new { Label = "💀 ZOMBIE KILLS", Value = profile.ZombieKills.ToString(), Color = "0.8 0.3 0.3" },
+                        new { Label = "🏆 HIGHEST WAVE", Value = profile.HighestWave.ToString(), Color = "0.3 0.8 1.0" },
+                        new { Label = "💰 BLOOD TOKENS", Value = profile.Tokens.ToString(), Color = "1.0 0.7 0.2" },
+                        new { Label = "📈 TOTAL EARNED", Value = profile.TotalTokensEarned.ToString(), Color = "0.3 1.0 0.5" },
+                        new { Label = "⚔️ TOTAL KILLS", Value = profile.TotalKills.ToString(), Color = "0.3 0.8 0.4" },
+                        new { Label = "💀 DEATHS", Value = profile.TotalDeaths.ToString(), Color = "0.8 0.3 0.3" },
+                        new { Label = "📊 K/D RATIO", Value = kd.ToString("F2"), Color = "0.4 0.7 1.0" },
+                        new { Label = "🎮 MATCHES", Value = profile.MatchesPlayed.ToString(), Color = "0.7 0.5 1.0" }
                     };
                     
-                    int cols = 3;
-                    float cardWidth = 0.30f;
-                    float cardHeight = 0.35f;
-                    float spacingX = 0.025f;
-                    float spacingY = 0.05f;
-                    float startX = 0.03f;
-                    float startY = 0.90f;
+                    int cols = 2;
+                    float cardWidth = 0.45f;
+                    float cardHeight = 0.18f;
+                    float spacingX = 0.04f;
+                    float spacingY = 0.025f;
+                    float startX = 0.025f;
+                    float startY = 0.85f;
                     
                     for (int i = 0; i < statsData.Length; i++)
                     {
@@ -4189,25 +5528,18 @@ namespace Oxide.Plugins
                             RectTransform = { AnchorMin = $"{xMin} {yMin}", AnchorMax = $"{xMax} {yMax}" }
                         }, "StatsContent", cardName);
                         
-                        // Top accent
-                        container.Add(new CuiPanel
-                        {
-                            Image = { Color = $"{statsData[i].Color} 0.8" },
-                            RectTransform = { AnchorMin = "0 0.95", AnchorMax = "1 1" }
-                        }, cardName);
-                        
                         // Label
                         container.Add(new CuiLabel
                         {
-                            Text = { Text = statsData[i].Label, FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
-                            RectTransform = { AnchorMin = "0 0.60", AnchorMax = "1 0.85" }
+                            Text = { Text = statsData[i].Label, FontSize = 11, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                            RectTransform = { AnchorMin = "0 0.55", AnchorMax = "1 0.95" }
                         }, cardName);
                         
                         // Value
                         container.Add(new CuiLabel
                         {
-                            Text = { Text = statsData[i].Value, FontSize = 28, Align = TextAnchor.MiddleCenter, Color = $"{statsData[i].Color} 1" },
-                            RectTransform = { AnchorMin = "0 0.15", AnchorMax = "1 0.60" }
+                            Text = { Text = statsData[i].Value, FontSize = 20, Align = TextAnchor.MiddleCenter, Color = $"{statsData[i].Color} 1" },
+                            RectTransform = { AnchorMin = "0 0.05", AnchorMax = "1 0.55" }
                         }, cardName);
                     }
                 }
@@ -4220,6 +5552,111 @@ namespace Oxide.Plugins
                     }, "StatsContent");
                 }
                 
+                // RIGHT SIDE - Leaderboard
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.04 0.04 0.06 0.9" },
+                    RectTransform = { AnchorMin = "0.52 0.10", AnchorMax = "0.98 0.85" }
+                }, UI_TAB_CONTAINER, "LeaderboardContent");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "🏆 TOP PLAYERS - HIGHEST WAVE", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 0.8 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.90", AnchorMax = "1 0.98" }
+                }, "LeaderboardContent");
+                
+                // Load and display leaderboard
+                var leaderboard = GetWaveLeaderboard(10);
+                float rowHeight = 0.075f;
+                float startRowY = 0.85f;
+                
+                // Header row
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.1 0.1 0.15 0.8" },
+                    RectTransform = { AnchorMin = $"0.02 {startRowY}", AnchorMax = $"0.98 {startRowY + rowHeight}" }
+                }, "LeaderboardContent", "LBHeader");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "#", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0 0", AnchorMax = "0.12 1" }
+                }, "LBHeader");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "PLAYER", FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.15 0", AnchorMax = "0.60 1" }
+                }, "LBHeader");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "WAVE", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.60 0", AnchorMax = "0.78 1" }
+                }, "LBHeader");
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "KILLS", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.78 0", AnchorMax = "0.98 1" }
+                }, "LBHeader");
+                
+                for (int i = 0; i < leaderboard.Count; i++)
+                {
+                    var entry = leaderboard[i];
+                    float yPos = startRowY - ((i + 1) * (rowHeight + 0.005f));
+                    
+                    string rowColor = entry.SteamID == player.userID ? "0.15 0.25 0.15 0.9" : "0.06 0.06 0.08 0.8";
+                    string rankColor = i == 0 ? "1 0.85 0 1" : i == 1 ? "0.8 0.8 0.9 1" : i == 2 ? "0.8 0.5 0.2 1" : "1 1 1 0.8";
+                    
+                    string rowName = $"LBRow_{i}";
+                    container.Add(new CuiPanel
+                    {
+                        Image = { Color = rowColor },
+                        RectTransform = { AnchorMin = $"0.02 {yPos}", AnchorMax = $"0.98 {yPos + rowHeight}" }
+                    }, "LeaderboardContent", rowName);
+                    
+                    // Rank
+                    string rankText = i == 0 ? "🥇" : i == 1 ? "🥈" : i == 2 ? "🥉" : $"#{i + 1}";
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = rankText, FontSize = 14, Align = TextAnchor.MiddleCenter, Color = rankColor },
+                        RectTransform = { AnchorMin = "0 0", AnchorMax = "0.12 1" }
+                    }, rowName);
+                    
+                    // Name
+                    string displayName = entry.DisplayName ?? $"Player {entry.SteamID}";
+                    if (displayName.Length > 14) displayName = displayName.Substring(0, 14) + "...";
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = displayName, FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "1 1 1 0.9" },
+                        RectTransform = { AnchorMin = "0.15 0", AnchorMax = "0.60 1" }
+                    }, rowName);
+                    
+                    // Wave
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = entry.HighestWave.ToString(), FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.3 0.8 1 1" },
+                        RectTransform = { AnchorMin = "0.60 0", AnchorMax = "0.78 1" }
+                    }, rowName);
+                    
+                    // Kills
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = entry.ZombieKills.ToString(), FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.8 0.3 0.3 1" },
+                        RectTransform = { AnchorMin = "0.78 0", AnchorMax = "0.98 1" }
+                    }, rowName);
+                }
+                
+                if (leaderboard.Count == 0)
+                {
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = "No leaderboard data yet.\nPlay zombies mode to get on the board!", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.6 0.6 0.6 1" },
+                        RectTransform = { AnchorMin = "0.05 0.35", AnchorMax = "0.95 0.60" }
+                    }, "LeaderboardContent");
+                }
+                
                 // Footer
                 container.Add(new CuiPanel
                 {
@@ -4229,9 +5666,82 @@ namespace Oxide.Plugins
                 
                 container.Add(new CuiLabel
                 {
-                    Text = { Text = "📊 Stats are updated in real-time as you play", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.8 0.9 1" },
+                    Text = { Text = "📊 Stats and tokens are saved automatically • Kill zombies to climb the leaderboard!", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.8 0.9 1" },
                     RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" }
                 }, "StatsFooter");
+            }
+            
+            /// <summary>
+            /// Helper class for leaderboard entries
+            /// </summary>
+            private class LeaderboardEntry
+            {
+                public ulong SteamID { get; set; }
+                public string DisplayName { get; set; }
+                public int HighestWave { get; set; }
+                public int ZombieKills { get; set; }
+            }
+            
+            /// <summary>
+            /// Get the wave leaderboard from all player profiles
+            /// </summary>
+            private List<LeaderboardEntry> GetWaveLeaderboard(int count)
+            {
+                var entries = new List<LeaderboardEntry>();
+                
+                // Get all active sessions first
+                foreach (var kvp in _plugin._activeSessions)
+                {
+                    var profile = kvp.Value.Profile;
+                    if (profile.HighestWave > 0 || profile.ZombieKills > 0)
+                    {
+                        entries.Add(new LeaderboardEntry
+                        {
+                            SteamID = profile.SteamID,
+                            DisplayName = profile.DisplayName ?? "Unknown",
+                            HighestWave = profile.HighestWave,
+                            ZombieKills = profile.ZombieKills
+                        });
+                    }
+                }
+                
+                // Load additional profiles from saved data
+                string dataDir = Path.Combine(Interface.Oxide.DataDirectory, "KillaDome");
+                if (Directory.Exists(dataDir))
+                {
+                    foreach (string file in Directory.GetFiles(dataDir, "*.json"))
+                    {
+                        try
+                        {
+                            string fileName = Path.GetFileNameWithoutExtension(file);
+                            if (!ulong.TryParse(fileName, out ulong steamId)) continue;
+                            
+                            // Skip if already in active sessions
+                            if (entries.Any(e => e.SteamID == steamId)) continue;
+                            
+                            string json = File.ReadAllText(file);
+                            var profile = JsonConvert.DeserializeObject<PlayerProfile>(json);
+                            if (profile != null && (profile.HighestWave > 0 || profile.ZombieKills > 0))
+                            {
+                                entries.Add(new LeaderboardEntry
+                                {
+                                    SteamID = profile.SteamID,
+                                    DisplayName = profile.DisplayName ?? "Unknown",
+                                    HighestWave = profile.HighestWave,
+                                    ZombieKills = profile.ZombieKills
+                                });
+                            }
+                        }
+                        catch { /* Skip invalid files */ }
+                    }
+                }
+                
+                // Sort by highest wave, then by zombie kills
+                return entries
+                    .OrderByDescending(e => e.HighestWave)
+                    .ThenByDescending(e => e.ZombieKills)
+                    .Take(count)
+                    .ToList();
             }
             
             private void ShowSettingsTab(CuiElementContainer container, BasePlayer player)
@@ -4790,6 +6300,1558 @@ namespace Oxide.Plugins
             public Dictionary<string, int> GetStats()
             {
                 return new Dictionary<string, int>(_eventCounts);
+            }
+        }
+        
+        #endregion
+        
+        #region Module: ZombieIntegration
+        
+        /// <summary>
+        /// Integration module for NecroZombies plugin - provides the full Black Ops zombies experience.
+        /// Handles communication with NecroZombies public API for zombie wave spawning and control.
+        /// </summary>
+        internal class ZombieIntegration
+        {
+            private KillaDome _plugin;
+            private PluginConfig _config;
+            
+            internal ZombieIntegration(KillaDome plugin, PluginConfig config)
+            {
+                _plugin = plugin;
+                _config = config;
+            }
+            
+            /// <summary>
+            /// Check if NecroZombies plugin is loaded and available
+            /// </summary>
+            public bool IsNecroZombiesLoaded()
+            {
+                return _plugin.NecroZombies != null && _plugin.NecroZombies.IsLoaded;
+            }
+            
+            /// <summary>
+            /// Start zombie wave mode at the specified position.
+            /// This activates the Black Ops style zombie waves with drip spawning.
+            /// </summary>
+            /// <param name="center">Center position for zombie spawns</param>
+            /// <param name="profileName">Zombie profile name (default, runner, brute, etc.)</param>
+            /// <param name="spawnSetName">Optional spawn set name for multiple spawn points</param>
+            /// <returns>True if wave mode started successfully</returns>
+            public bool StartWaveMode(Vector3 center, string profileName = "default", string spawnSetName = null)
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    _plugin.PrintWarning("Cannot start zombie wave mode - NecroZombies plugin not loaded!");
+                    return false;
+                }
+                
+                try
+                {
+                    object result = _plugin.NecroZombies.Call("NecroZombies_StartWaveMode", center, profileName, spawnSetName);
+                    bool success = result != null && (bool)result;
+                    
+                    if (success)
+                    {
+                        _plugin.LogDebug($"Started zombie wave mode at {center} with profile '{profileName}'");
+                    }
+                    
+                    return success;
+                }
+                catch (Exception ex)
+                {
+                    _plugin.PrintError($"Failed to start zombie wave mode: {ex.Message}");
+                    return false;
+                }
+            }
+            
+            /// <summary>
+            /// Stop the zombie wave mode and clean up
+            /// </summary>
+            public bool StopWaveMode()
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    return false;
+                }
+                
+                try
+                {
+                    object result = _plugin.NecroZombies.Call("NecroZombies_StopWaveMode");
+                    _plugin.LogDebug("Stopped zombie wave mode");
+                    return result != null && (bool)result;
+                }
+                catch (Exception ex)
+                {
+                    _plugin.PrintError($"Failed to stop zombie wave mode: {ex.Message}");
+                    return false;
+                }
+            }
+            
+            /// <summary>
+            /// Check if zombie wave mode is currently active
+            /// </summary>
+            public bool IsWaveModeActive()
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    return false;
+                }
+                
+                try
+                {
+                    object result = _plugin.NecroZombies.Call("NecroZombies_IsWaveModeActive");
+                    return result != null && (bool)result;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+            
+            /// <summary>
+            /// Get the count of currently active zombies
+            /// </summary>
+            public int GetActiveZombieCount()
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    return 0;
+                }
+                
+                try
+                {
+                    object result = _plugin.NecroZombies.Call("NecroZombies_GetActiveCount");
+                    return result != null ? (int)result : 0;
+                }
+                catch
+                {
+                    return 0;
+                }
+            }
+            
+            /// <summary>
+            /// Spawn a horde of zombies at the specified position
+            /// </summary>
+            /// <param name="position">Position to spawn zombies</param>
+            /// <param name="amount">Number of zombies to spawn</param>
+            /// <param name="profileName">Zombie profile to use</param>
+            /// <returns>Number of zombies actually spawned</returns>
+            public int SpawnHordeAt(Vector3 position, int amount, string profileName = "default")
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    _plugin.PrintWarning("Cannot spawn zombies - NecroZombies plugin not loaded!");
+                    return 0;
+                }
+                
+                try
+                {
+                    object result = _plugin.NecroZombies.Call("NecroZombies_SpawnHordeAt", position, amount, profileName);
+                    int spawned = result != null ? (int)result : 0;
+                    
+                    if (spawned > 0)
+                    {
+                        _plugin.LogDebug($"Spawned {spawned} zombies at {position} with profile '{profileName}'");
+                    }
+                    
+                    return spawned;
+                }
+                catch (Exception ex)
+                {
+                    _plugin.PrintError($"Failed to spawn zombies: {ex.Message}");
+                    return 0;
+                }
+            }
+            
+            /// <summary>
+            /// Kill all active zombies
+            /// </summary>
+            /// <returns>Number of zombies killed</returns>
+            public int KillAllZombies()
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    return 0;
+                }
+                
+                try
+                {
+                    object result = _plugin.NecroZombies.Call("NecroZombies_KillAll");
+                    int killed = result != null ? (int)result : 0;
+                    
+                    if (killed > 0)
+                    {
+                        _plugin.LogDebug($"Killed {killed} zombies");
+                    }
+                    
+                    return killed;
+                }
+                catch (Exception ex)
+                {
+                    _plugin.PrintError($"Failed to kill zombies: {ex.Message}");
+                    return 0;
+                }
+            }
+            
+            /// <summary>
+            /// Show the Black Ops style "Game Over" banner
+            /// </summary>
+            /// <param name="reason">Reason for game over</param>
+            public void ShowGameOver(string reason = "")
+            {
+                if (!IsNecroZombiesLoaded())
+                {
+                    return;
+                }
+                
+                try
+                {
+                    _plugin.NecroZombies.Call("NecroZombies_ShowGameOver", reason);
+                    _plugin.LogDebug($"Displayed Game Over banner: {reason}");
+                }
+                catch (Exception ex)
+                {
+                    _plugin.PrintError($"Failed to show game over: {ex.Message}");
+                }
+            }
+        }
+        
+        #endregion
+        
+        #region Module: GameModeSystem
+        
+        /// <summary>
+        /// Manages teleporter-based game mode selection.
+        /// Players step into teleporters to join Zombies or Normal mode.
+        /// Features: Host system, minimum player requirements, leave/rejoin
+        /// </summary>
+        internal class GameModeSystem
+        {
+            private KillaDome _plugin;
+            private PluginConfig _config;
+            
+            // Track players in each mode
+            private HashSet<ulong> _zombiesQueue = new HashSet<ulong>();
+            private HashSet<ulong> _normalQueue = new HashSet<ulong>();
+            private HashSet<ulong> _spectatingPlayers = new HashSet<ulong>();
+            
+            // Track confirmation UI per player
+            private Dictionary<ulong, GameMode> _pendingConfirmation = new Dictionary<ulong, GameMode>();
+            
+            // Active game states
+            private bool _zombiesMatchActive = false;
+            private bool _normalMatchActive = false;
+            
+            // Zombies lobby waiting state (before match starts)
+            private bool _zombiesLobbyWaiting = false;
+            
+            // Host system
+            private ulong _zombiesHostId = 0;
+            private const int MIN_PLAYERS_TO_START = 4;
+            
+            // Host UI timer
+            private Timer _hostUITimer;
+            
+            // Teleporter sphere entities
+            private List<BaseEntity> _teleporterTiles = new List<BaseEntity>();
+            
+            // Teleporter sphere prefabs (more visible and persistent)
+            private const string SPHERE_RED = "assets/bundled/prefabs/modding/events/twitch/br_sphere_red.prefab";
+            private const string SPHERE_GREEN = "assets/bundled/prefabs/modding/events/twitch/br_sphere_green.prefab";
+            
+            internal GameModeSystem(KillaDome plugin, PluginConfig config)
+            {
+                _plugin = plugin;
+                _config = config;
+            }
+            
+            /// <summary>
+            /// Spawn sphere at teleporter positions
+            /// </summary>
+            public void SpawnTeleporterTiles()
+            {
+                if (!_config.EnableTeleporterHexTiles) return;
+                
+                // Cleanup old tiles first
+                CleanupTeleporterTiles();
+                
+                // Spawn zombies teleporter sphere (red) - Only zombies mode now
+                SpawnTeleporterSphere(_config.ZombiesTeleporterPosition, SPHERE_RED);
+                
+                _plugin.LogDebug($"Spawned teleporter sphere at Zombies: {_config.ZombiesTeleporterPosition}");
+            }
+            
+            /// <summary>
+            /// Spawn a teleporter sphere entity
+            /// </summary>
+            private void SpawnTeleporterSphere(Vector3 position, string prefab)
+            {
+                try
+                {
+                    var entity = GameManager.server.CreateEntity(prefab, position + new Vector3(0, 1f, 0), Quaternion.identity);
+                    if (entity == null)
+                    {
+                        _plugin.PrintWarning($"Failed to create teleporter sphere at {position}");
+                        return;
+                    }
+                    
+                    entity.Spawn();
+                    
+                    // Make it static and invincible
+                    var baseCombat = entity.GetComponent<BaseCombatEntity>();
+                    if (baseCombat != null)
+                    {
+                        baseCombat.SetHealth(float.MaxValue);
+                    }
+                    
+                    _teleporterTiles.Add(entity);
+                }
+                catch (Exception ex)
+                {
+                    _plugin.PrintError($"Error spawning teleporter sphere: {ex.Message}");
+                }
+            }
+            
+            /// <summary>
+            /// Cleanup and remove all teleporter tiles
+            /// </summary>
+            public void CleanupTeleporterTiles()
+            {
+                foreach (var tile in _teleporterTiles)
+                {
+                    if (tile != null && !tile.IsDestroyed)
+                    {
+                        tile.Kill();
+                    }
+                }
+                _teleporterTiles.Clear();
+            }
+            
+            /// <summary>
+            /// Refresh teleporter tiles (cleanup and respawn)
+            /// </summary>
+            public void RefreshTeleporterTiles()
+            {
+                CleanupTeleporterTiles();
+                SpawnTeleporterTiles();
+            }
+            
+            /// <summary>
+            /// Check if a player is within a teleporter zone
+            /// </summary>
+            public GameMode GetTeleporterZone(Vector3 position)
+            {
+                float zombiesDist = Vector3.Distance(position, _config.ZombiesTeleporterPosition);
+                
+                if (zombiesDist <= _config.TeleporterRadius)
+                    return GameMode.Zombies;
+                    
+                return GameMode.None;
+            }
+            
+            /// <summary>
+            /// Handle player entering a teleporter zone
+            /// </summary>
+            public void OnPlayerEnterTeleporter(BasePlayer player, GameMode mode)
+            {
+                var session = _plugin.GetSession(player.userID);
+                if (session == null) return;
+                
+                // Prevent spam entry
+                if ((DateTime.UtcNow - session.LastTeleporterEntry).TotalSeconds < 1.0)
+                    return;
+                session.LastTeleporterEntry = DateTime.UtcNow;
+                
+                // Don't allow if already in match
+                if (session.IsInMatch)
+                {
+                    _plugin.SendReply(player, "<color=#FF4444>You cannot leave during a match!</color>");
+                    return;
+                }
+                
+                if (_config.EnableModeConfirmationUI)
+                {
+                    // Show confirmation UI
+                    _pendingConfirmation[player.userID] = mode;
+                    ShowConfirmationUI(player, mode);
+                }
+                else
+                {
+                    // Direct join without confirmation
+                    ConfirmModeSelection(player, mode);
+                }
+            }
+            
+            /// <summary>
+            /// Show the mode selection confirmation UI
+            /// </summary>
+            private void ShowConfirmationUI(BasePlayer player, GameMode mode)
+            {
+                string modeColor = mode == GameMode.Zombies ? "#FF4444" : "#44FF44";
+                string modeName = mode == GameMode.Zombies ? "ZOMBIES MODE" : "NORMAL MODE";
+                string modeDesc = mode == GameMode.Zombies 
+                    ? $"Fight waves of undead. Need {MIN_PLAYERS_TO_START} players to start."
+                    : "Classic PvP deathmatch.";
+                
+                int currentPlayers = mode == GameMode.Zombies ? _zombiesQueue.Count : _normalQueue.Count;
+                string playerCountInfo = mode == GameMode.Zombies 
+                    ? $"<color=#00FFFF>Players in lobby: {currentPlayers}/{MIN_PLAYERS_TO_START}</color>"
+                    : "";
+                
+                var elements = new CuiElementContainer();
+                
+                string panelName = "KillaDome_ModeConfirm";
+                
+                // Dark overlay
+                elements.Add(new CuiPanel
+                {
+                    Image = { Color = "0 0 0 0.85" },
+                    RectTransform = { AnchorMin = "0.3 0.30", AnchorMax = "0.7 0.70" },
+                    CursorEnabled = true
+                }, "Overlay", panelName);
+                
+                // Title
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = $"<color={modeColor}>JOIN {modeName}?</color>", FontSize = 24, Align = TextAnchor.MiddleCenter },
+                    RectTransform = { AnchorMin = "0 0.80", AnchorMax = "1 0.95" }
+                }, panelName);
+                
+                // Description
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = modeDesc, FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.8 0.8 0.8 1" },
+                    RectTransform = { AnchorMin = "0 0.65", AnchorMax = "1 0.78" }
+                }, panelName);
+                
+                // Player count (for zombies)
+                if (!string.IsNullOrEmpty(playerCountInfo))
+                {
+                    elements.Add(new CuiLabel
+                    {
+                        Text = { Text = playerCountInfo, FontSize = 16, Align = TextAnchor.MiddleCenter },
+                        RectTransform = { AnchorMin = "0 0.50", AnchorMax = "1 0.63" }
+                    }, panelName);
+                }
+                
+                // Info about leaving
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = "<color=#88FF88>You can leave anytime with /kd leave</color>", FontSize = 12, Align = TextAnchor.MiddleCenter },
+                    RectTransform = { AnchorMin = "0 0.35", AnchorMax = "1 0.48" }
+                }, panelName);
+                
+                // Confirm button
+                elements.Add(new CuiButton
+                {
+                    Button = { Color = "0.2 0.6 0.2 1", Command = $"kd.confirmmode {(int)mode}" },
+                    RectTransform = { AnchorMin = "0.1 0.08", AnchorMax = "0.45 0.25" },
+                    Text = { Text = "JOIN", FontSize = 18, Align = TextAnchor.MiddleCenter }
+                }, panelName);
+                
+                // Cancel button
+                elements.Add(new CuiButton
+                {
+                    Button = { Color = "0.6 0.2 0.2 1", Command = "kd.cancelmode" },
+                    RectTransform = { AnchorMin = "0.55 0.08", AnchorMax = "0.9 0.25" },
+                    Text = { Text = "CANCEL", FontSize = 18, Align = TextAnchor.MiddleCenter }
+                }, panelName);
+                
+                CuiHelper.DestroyUi(player, panelName);
+                CuiHelper.AddUi(player, elements);
+            }
+            
+            /// <summary>
+            /// Close the confirmation UI
+            /// </summary>
+            public void CloseConfirmationUI(BasePlayer player)
+            {
+                CuiHelper.DestroyUi(player, "KillaDome_ModeConfirm");
+                _pendingConfirmation.Remove(player.userID);
+            }
+            
+            /// <summary>
+            /// Player confirmed their mode selection
+            /// </summary>
+            public void ConfirmModeSelection(BasePlayer player, GameMode mode)
+            {
+                CloseConfirmationUI(player);
+                
+                // Hide lobby leaderboard when entering match
+                _plugin.HideLobbyLeaderboard(player);
+                
+                var session = _plugin.GetSession(player.userID);
+                if (session == null) return;
+                
+                session.SelectedGameMode = mode;
+                session.CanLeaveMatch = true; // Players can now leave
+                
+                if (mode == GameMode.Zombies)
+                {
+                    // Add to zombies queue
+                    _zombiesQueue.Add(player.userID);
+                    
+                    // First player becomes host
+                    if (_zombiesHostId == 0)
+                    {
+                        _zombiesHostId = player.userID;
+                        _plugin.SendReply(player, "<color=#FFD700>★ You are the HOST! ★</color>\nYou can force start or end the match.");
+                    }
+                    
+                    // If match already active, spectate until next wave
+                    if (_zombiesMatchActive)
+                    {
+                        // Teleport to spectate position
+                        _plugin.TeleportPlayer(player, _config.SpectatePosition);
+                        session.IsSpectating = true;
+                        session.IsInMatch = true;
+                        _spectatingPlayers.Add(player.userID);
+                        _plugin.SendReply(player, "<color=#FF4444>Zombies match in progress! Spectating until next wave...</color>");
+                    }
+                    else if (_zombiesLobbyWaiting)
+                    {
+                        // Already waiting for players - just add to queue
+                        _plugin.TeleportPlayer(player, _config.SpectatePosition);
+                        session.IsSpectating = true;
+                        _spectatingPlayers.Add(player.userID);
+                        
+                        int needed = MIN_PLAYERS_TO_START - _zombiesQueue.Count;
+                        if (needed > 0)
+                        {
+                            BroadcastToZombiesQueue($"<color=#00FFFF>{player.displayName} joined!</color> Need {needed} more player(s) to start.");
+                        }
+                        
+                        // Show host UI if enough players
+                        UpdateHostUI();
+                        
+                        // Check if enough players to start
+                        if (_zombiesQueue.Count >= MIN_PLAYERS_TO_START)
+                        {
+                            BroadcastToZombiesQueue("<color=#00FF00>Enough players! Host can now start the match.</color>");
+                        }
+                    }
+                    else
+                    {
+                        // Start waiting lobby
+                        _zombiesLobbyWaiting = true;
+                        _plugin.TeleportPlayer(player, _config.SpectatePosition);
+                        session.IsSpectating = true;
+                        _spectatingPlayers.Add(player.userID);
+                        
+                        int needed = MIN_PLAYERS_TO_START - _zombiesQueue.Count;
+                        _plugin.SendReply(player, $"<color=#00FFFF>Waiting for players...</color> Need {needed} more to start.");
+                        
+                        // Start host UI refresh timer
+                        StartHostUITimer();
+                    }
+                }
+                else if (mode == GameMode.Normal)
+                {
+                    _normalQueue.Add(player.userID);
+                    
+                    if (_normalMatchActive)
+                    {
+                        // Join ongoing match
+                        JoinNormalMatch(player);
+                    }
+                    else
+                    {
+                        StartNormalMatch();
+                    }
+                }
+                
+                _plugin.Puts($"{player.displayName} joined {mode} mode");
+            }
+            
+            /// <summary>
+            /// Broadcast message to all players in zombies queue
+            /// </summary>
+            private void BroadcastToZombiesQueue(string message)
+            {
+                foreach (ulong steamId in _zombiesQueue)
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player != null && player.IsConnected)
+                    {
+                        _plugin.SendReply(player, message);
+                    }
+                }
+            }
+            
+            /// <summary>
+            /// Start the host UI refresh timer
+            /// </summary>
+            private void StartHostUITimer()
+            {
+                _hostUITimer?.Destroy();
+                _hostUITimer = _plugin.timer.Every(1f, () =>
+                {
+                    if (!_zombiesLobbyWaiting && !_zombiesMatchActive)
+                    {
+                        _hostUITimer?.Destroy();
+                        _hostUITimer = null;
+                        return;
+                    }
+                    UpdateHostUI();
+                });
+            }
+            
+            /// <summary>
+            /// Update the host UI for all players in queue
+            /// </summary>
+            private void UpdateHostUI()
+            {
+                foreach (ulong steamId in _zombiesQueue)
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player == null || !player.IsConnected) continue;
+                    
+                    bool isHost = (steamId == _zombiesHostId);
+                    ShowZombiesLobbyUI(player, isHost);
+                }
+            }
+            
+            /// <summary>
+            /// Show the zombies lobby UI (with host controls if applicable)
+            /// </summary>
+            private void ShowZombiesLobbyUI(BasePlayer player, bool isHost)
+            {
+                string panelName = "KillaDome_ZombiesLobby";
+                CuiHelper.DestroyUi(player, panelName);
+                
+                var elements = new CuiElementContainer();
+                
+                int playerCount = _zombiesQueue.Count;
+                bool canStart = playerCount >= MIN_PLAYERS_TO_START || isHost;
+                string statusColor = playerCount >= MIN_PLAYERS_TO_START ? "#00FF00" : "#FFFF00";
+                string status = _zombiesMatchActive ? "MATCH IN PROGRESS" : 
+                               (playerCount >= MIN_PLAYERS_TO_START ? "READY TO START!" : $"Waiting for players... ({playerCount}/{MIN_PLAYERS_TO_START})");
+                
+                // Main panel - top right corner
+                elements.Add(new CuiPanel
+                {
+                    Image = { Color = "0 0 0 0.8" },
+                    RectTransform = { AnchorMin = "0.70 0.70", AnchorMax = "0.99 0.99" },
+                    CursorEnabled = false
+                }, "Overlay", panelName);
+                
+                // Title
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = "<color=#FF4444>⚔ ZOMBIES LOBBY ⚔</color>", FontSize = 18, Align = TextAnchor.MiddleCenter },
+                    RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.98" }
+                }, panelName);
+                
+                // Status
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = $"<color={statusColor}>{status}</color>", FontSize = 14, Align = TextAnchor.MiddleCenter },
+                    RectTransform = { AnchorMin = "0 0.70", AnchorMax = "1 0.83" }
+                }, panelName);
+                
+                // Player list
+                string playerList = "Players: ";
+                int count = 0;
+                foreach (ulong steamId in _zombiesQueue)
+                {
+                    var p = BasePlayer.FindByID(steamId);
+                    if (p != null)
+                    {
+                        string hostMarker = steamId == _zombiesHostId ? " ★" : "";
+                        playerList += (count > 0 ? ", " : "") + p.displayName + hostMarker;
+                        count++;
+                    }
+                }
+                
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = playerList, FontSize = 11, Align = TextAnchor.UpperLeft, Color = "0.8 0.8 0.8 1" },
+                    RectTransform = { AnchorMin = "0.03 0.40", AnchorMax = "0.97 0.68" }
+                }, panelName);
+                
+                // Host indicator
+                if (isHost)
+                {
+                    elements.Add(new CuiLabel
+                    {
+                        Text = { Text = "<color=#FFD700>★ YOU ARE HOST ★</color>", FontSize = 12, Align = TextAnchor.MiddleCenter },
+                        RectTransform = { AnchorMin = "0 0.32", AnchorMax = "1 0.40" }
+                    }, panelName);
+                    
+                    if (!_zombiesMatchActive)
+                    {
+                        // Force Start button (host only)
+                        elements.Add(new CuiButton
+                        {
+                            Button = { Color = canStart ? "0.2 0.6 0.2 1" : "0.3 0.3 0.3 1", Command = "kd.host.forcestart" },
+                            RectTransform = { AnchorMin = "0.05 0.15", AnchorMax = "0.48 0.30" },
+                            Text = { Text = "FORCE START", FontSize = 12, Align = TextAnchor.MiddleCenter }
+                        }, panelName);
+                    }
+                    else
+                    {
+                        // End Match button (host only, during match)
+                        elements.Add(new CuiButton
+                        {
+                            Button = { Color = "0.6 0.2 0.2 1", Command = "kd.host.endmatch" },
+                            RectTransform = { AnchorMin = "0.05 0.15", AnchorMax = "0.48 0.30" },
+                            Text = { Text = "END MATCH", FontSize = 12, Align = TextAnchor.MiddleCenter }
+                        }, panelName);
+                    }
+                }
+                
+                // Leave button (everyone)
+                elements.Add(new CuiButton
+                {
+                    Button = { Color = "0.5 0.3 0.1 1", Command = "kd.leave" },
+                    RectTransform = { AnchorMin = "0.52 0.15", AnchorMax = "0.95 0.30" },
+                    Text = { Text = "LEAVE", FontSize = 12, Align = TextAnchor.MiddleCenter }
+                }, panelName);
+                
+                // Leave hint
+                elements.Add(new CuiLabel
+                {
+                    Text = { Text = "Type /kd leave to exit", FontSize = 10, Align = TextAnchor.MiddleCenter, Color = "0.6 0.6 0.6 1" },
+                    RectTransform = { AnchorMin = "0 0.02", AnchorMax = "1 0.12" }
+                }, panelName);
+                
+                CuiHelper.AddUi(player, elements);
+            }
+            
+            /// <summary>
+            /// Hide the zombies lobby UI for a player
+            /// </summary>
+            private void HideZombiesLobbyUI(BasePlayer player)
+            {
+                CuiHelper.DestroyUi(player, "KillaDome_ZombiesLobby");
+            }
+            
+            /// <summary>
+            /// Host force starts the match
+            /// </summary>
+            public void HostForceStart(BasePlayer player)
+            {
+                if (player.userID != _zombiesHostId)
+                {
+                    _plugin.SendReply(player, "<color=#FF4444>Only the host can force start!</color>");
+                    return;
+                }
+                
+                if (_zombiesMatchActive)
+                {
+                    _plugin.SendReply(player, "<color=#FF4444>Match already in progress!</color>");
+                    return;
+                }
+                
+                if (_zombiesQueue.Count < 1)
+                {
+                    _plugin.SendReply(player, "<color=#FF4444>Need at least 1 player to start!</color>");
+                    return;
+                }
+                
+                BroadcastToZombiesQueue("<color=#00FF00>Host force started the match!</color>");
+                StartZombiesMatch();
+            }
+            
+            /// <summary>
+            /// Host ends the match
+            /// </summary>
+            public void HostEndMatch(BasePlayer player)
+            {
+                if (player.userID != _zombiesHostId)
+                {
+                    _plugin.SendReply(player, "<color=#FF4444>Only the host can end the match!</color>");
+                    return;
+                }
+                
+                BroadcastToZombiesQueue("<color=#FF8800>Host ended the match!</color>");
+                EndZombiesMatch();
+            }
+            
+            /// <summary>
+            /// Player wants to leave the match
+            /// </summary>
+            public void PlayerLeave(BasePlayer player)
+            {
+                var session = _plugin.GetSession(player.userID);
+                if (session == null) return;
+                
+                GameMode mode = session.SelectedGameMode;
+                
+                if (mode == GameMode.Zombies)
+                {
+                    LeaveZombiesMatch(player);
+                }
+                else if (mode == GameMode.Normal)
+                {
+                    LeaveNormalMatch(player);
+                }
+                else
+                {
+                    _plugin.SendReply(player, "<color=#FFFF00>You are not in a match.</color>");
+                }
+            }
+            
+            /// <summary>
+            /// Player leaves zombies match
+            /// </summary>
+            private void LeaveZombiesMatch(BasePlayer player)
+            {
+                ulong steamId = player.userID;
+                
+                _zombiesQueue.Remove(steamId);
+                _spectatingPlayers.Remove(steamId);
+                
+                var session = _plugin.GetSession(steamId);
+                if (session != null)
+                {
+                    session.IsInMatch = false;
+                    session.IsSpectating = false;
+                    session.SelectedGameMode = GameMode.None;
+                    session.CanLeaveMatch = true;
+                }
+                
+                HideZombiesLobbyUI(player);
+                _plugin.TeleportToLobby(player);
+                _plugin.SendReply(player, "<color=#FFFF00>You left the zombies match.</color>");
+                
+                // Transfer host if host left
+                if (steamId == _zombiesHostId)
+                {
+                    TransferHost();
+                }
+                
+                // Check if lobby should be closed (no players left)
+                if (_zombiesQueue.Count == 0)
+                {
+                    if (_zombiesMatchActive)
+                    {
+                        EndZombiesMatch();
+                    }
+                    else
+                    {
+                        _zombiesLobbyWaiting = false;
+                        _zombiesHostId = 0;
+                        _hostUITimer?.Destroy();
+                        _hostUITimer = null;
+                    }
+                }
+                else
+                {
+                    // Update remaining players UI
+                    BroadcastToZombiesQueue($"<color=#FFFF00>{player.displayName} left the match.</color>");
+                    UpdateHostUI();
+                }
+                
+                _plugin.Puts($"{player.displayName} left zombies mode");
+            }
+            
+            /// <summary>
+            /// Player leaves normal match
+            /// </summary>
+            private void LeaveNormalMatch(BasePlayer player)
+            {
+                ulong steamId = player.userID;
+                
+                _normalQueue.Remove(steamId);
+                
+                var session = _plugin.GetSession(steamId);
+                if (session != null)
+                {
+                    session.IsInMatch = false;
+                    session.SelectedGameMode = GameMode.None;
+                    session.CanLeaveMatch = true;
+                }
+                
+                _plugin.TeleportToLobby(player);
+                _plugin.SendReply(player, "<color=#FFFF00>You left the normal match.</color>");
+                
+                _plugin.Puts($"{player.displayName} left normal mode");
+            }
+            
+            /// <summary>
+            /// Transfer host to next player in queue
+            /// </summary>
+            private void TransferHost()
+            {
+                _zombiesHostId = 0;
+                
+                if (_zombiesQueue.Count > 0)
+                {
+                    _zombiesHostId = _zombiesQueue.First();
+                    
+                    var newHost = BasePlayer.FindByID(_zombiesHostId);
+                    if (newHost != null && newHost.IsConnected)
+                    {
+                        _plugin.SendReply(newHost, "<color=#FFD700>★ You are now the HOST! ★</color>");
+                        BroadcastToZombiesQueue($"<color=#FFD700>{newHost.displayName} is now the host.</color>");
+                    }
+                }
+            }
+            
+            /// <summary>
+            /// Handle player disconnect - transfer host if needed
+            /// </summary>
+            public void OnPlayerDisconnected(ulong steamId)
+            {
+                if (_zombiesQueue.Contains(steamId))
+                {
+                    _zombiesQueue.Remove(steamId);
+                    _spectatingPlayers.Remove(steamId);
+                    
+                    if (steamId == _zombiesHostId)
+                    {
+                        TransferHost();
+                    }
+                    
+                    // Check if lobby should be closed
+                    if (_zombiesQueue.Count == 0)
+                    {
+                        if (_zombiesMatchActive)
+                        {
+                            EndZombiesMatch();
+                        }
+                        else
+                        {
+                            _zombiesLobbyWaiting = false;
+                            _zombiesHostId = 0;
+                        }
+                    }
+                    else
+                    {
+                        UpdateHostUI();
+                    }
+                }
+                
+                if (_normalQueue.Contains(steamId))
+                {
+                    _normalQueue.Remove(steamId);
+                }
+            }
+            
+            /// <summary>
+            /// Start zombies match
+            /// </summary>
+            private void StartZombiesMatch()
+            {
+                _zombiesMatchActive = true;
+                _zombiesLobbyWaiting = false;
+                
+                BroadcastToZombiesQueue("<color=#00FF00>⚔ MATCH STARTING! ⚔</color>");
+                
+                foreach (ulong steamId in _zombiesQueue)
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player == null || !player.IsConnected) continue;
+                    
+                    var session = _plugin.GetSession(steamId);
+                    if (session == null) continue;
+                    
+                    session.IsInMatch = true;
+                    session.IsSpectating = false;
+                    _spectatingPlayers.Remove(steamId);
+                    
+                    // Hide lobby UI and show match UI
+                    HideZombiesLobbyUI(player);
+                    
+                    // Teleport to zombies arena and give loadout
+                    _plugin.TeleportPlayer(player, _config.ZombiesArenaPosition);
+                    _plugin.GiveLoadout(player);
+                }
+                
+                // Update UI for all players (now in match mode)
+                UpdateHostUI();
+                
+                // Start zombie wave mode
+                if (_plugin._zombieIntegration.IsNecroZombiesLoaded())
+                {
+                    _plugin._zombieIntegration.StartWaveMode(_config.ZombiesArenaPosition, _config.ZombiesProfileName, _config.ZombiesSpawnSetName);
+                }
+                
+                _plugin.Puts("Zombies match started!");
+            }
+            
+            /// <summary>
+            /// Start normal match
+            /// </summary>
+            private void StartNormalMatch()
+            {
+                _normalMatchActive = true;
+                
+                foreach (ulong steamId in _normalQueue)
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player == null || !player.IsConnected) continue;
+                    
+                    JoinNormalMatch(player);
+                }
+                
+                _plugin.Puts("Normal match started!");
+            }
+            
+            /// <summary>
+            /// Join an ongoing normal match
+            /// </summary>
+            private void JoinNormalMatch(BasePlayer player)
+            {
+                var session = _plugin.GetSession(player.userID);
+                if (session == null) return;
+                
+                session.IsInMatch = true;
+                _plugin.TeleportPlayer(player, _config.NormalArenaPosition);
+                _plugin.GiveLoadout(player);
+            }
+            
+            /// <summary>
+            /// Called when a zombies wave ends - respawn spectators
+            /// </summary>
+            public void OnZombiesWaveEnd()
+            {
+                // Cancel all-dead timer when wave ends
+                _allDeadTimer?.Destroy();
+                _allDeadTimer = null;
+                
+                foreach (ulong steamId in _spectatingPlayers.ToList())
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player == null || !player.IsConnected) continue;
+                    
+                    var session = _plugin.GetSession(steamId);
+                    if (session == null) continue;
+                    
+                    session.IsSpectating = false;
+                    _spectatingPlayers.Remove(steamId);
+                    
+                    // Hide buy life UI
+                    HideBuyLifeUI(player);
+                    
+                    // Spawn with loadout
+                    _plugin.TeleportPlayer(player, _config.ZombiesArenaPosition);
+                    _plugin.GiveLoadout(player);
+                    _plugin.SendReply(player, "<color=#44FF44>Wave starting! You have been spawned!</color>");
+                }
+            }
+            
+            /// <summary>
+            /// Handle player death in zombies mode
+            /// </summary>
+            public void OnZombiesPlayerDeath(BasePlayer player)
+            {
+                var session = _plugin.GetSession(player.userID);
+                if (session == null) return;
+                
+                // Move to spectate until next wave
+                session.IsSpectating = true;
+                _spectatingPlayers.Add(player.userID);
+                
+                _plugin.timer.Once(2f, () =>
+                {
+                    if (player != null && player.IsConnected)
+                    {
+                        _plugin.TeleportPlayer(player, _config.SpectatePosition);
+                        
+                        // Check if all players are dead
+                        if (AreAllPlayersDead())
+                        {
+                            // Show buy life UI to all dead players
+                            ShowBuyLifeUIToAllDead();
+                            _plugin.SendReply(player, "<color=#FF4444>ALL PLAYERS DOWN!</color> Buy your life back for <color=#FFD700>3000 Blood Tokens</color> or match ends in 30 seconds!");
+                            
+                            // Start countdown - if no one buys life in 30 seconds, end match
+                            StartAllDeadCountdown();
+                        }
+                        else
+                        {
+                            _plugin.SendReply(player, "<color=#FF8800>You died!</color> Spectating until next wave... (or buy life for <color=#FFD700>3000 tokens</color>)");
+                            ShowBuyLifeUI(player);
+                        }
+                    }
+                });
+            }
+            
+            private Timer _allDeadTimer = null;
+            private const int BUY_LIFE_COST = 3000;
+            private const float ALL_DEAD_COUNTDOWN = 30f;
+            
+            /// <summary>
+            /// Check if all active players in the match are dead (spectating)
+            /// </summary>
+            private bool AreAllPlayersDead()
+            {
+                if (!_zombiesMatchActive) return false;
+                
+                // Get all players in the match who are not spectating
+                int aliveCount = 0;
+                foreach (ulong steamId in _zombiesQueue)
+                {
+                    if (!_spectatingPlayers.Contains(steamId))
+                    {
+                        aliveCount++;
+                    }
+                }
+                
+                return aliveCount == 0 && _zombiesQueue.Count > 0;
+            }
+            
+            /// <summary>
+            /// Start countdown when all players are dead
+            /// </summary>
+            private void StartAllDeadCountdown()
+            {
+                // Cancel any existing timer
+                _allDeadTimer?.Destroy();
+                
+                _allDeadTimer = _plugin.timer.Once(ALL_DEAD_COUNTDOWN, () =>
+                {
+                    // Check if still all dead
+                    if (AreAllPlayersDead() && _zombiesMatchActive)
+                    {
+                        // End the match - everyone failed
+                        foreach (ulong steamId in _zombiesQueue.ToList())
+                        {
+                            var player = BasePlayer.FindByID(steamId);
+                            if (player != null && player.IsConnected)
+                            {
+                                HideBuyLifeUI(player);
+                                _plugin.SendReply(player, "<color=#FF4444>GAME OVER!</color> No one bought their life back...");
+                            }
+                        }
+                        EndZombiesMatch();
+                    }
+                });
+            }
+            
+            /// <summary>
+            /// Show buy life UI to a spectating player
+            /// </summary>
+            private void ShowBuyLifeUI(BasePlayer player)
+            {
+                if (player == null) return;
+                
+                CuiHelper.DestroyUi(player, "BuyLifeUI");
+                var container = new CuiElementContainer();
+                
+                var session = _plugin.GetSession(player.userID);
+                int balance = session?.Profile?.Tokens ?? 0;
+                bool canAfford = balance >= BUY_LIFE_COST;
+                
+                // Main panel - bottom right
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.1 0.05 0.05 0.95" },
+                    RectTransform = { AnchorMin = "0.70 0.15", AnchorMax = "0.98 0.35" }
+                }, "Overlay", "BuyLifeUI");
+                
+                // Title
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "💀 YOU DIED 💀", FontSize = 18, Align = TextAnchor.MiddleCenter, Color = "1 0.3 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.70", AnchorMax = "1 0.95" }
+                }, "BuyLifeUI");
+                
+                // Cost info
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = $"Buy Life: <color=#FFD700>{BUY_LIFE_COST}</color> Blood Tokens", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 1 1 0.9" },
+                    RectTransform = { AnchorMin = "0 0.45", AnchorMax = "1 0.65" }
+                }, "BuyLifeUI");
+                
+                // Balance
+                string balanceColor = canAfford ? "0.5 1 0.5 1" : "1 0.3 0.3 1";
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = $"Your Balance: {balance}", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = balanceColor },
+                    RectTransform = { AnchorMin = "0 0.28", AnchorMax = "1 0.45" }
+                }, "BuyLifeUI");
+                
+                // Buy button
+                string buttonColor = canAfford ? "0.2 0.6 0.2 0.9" : "0.3 0.3 0.3 0.7";
+                container.Add(new CuiButton
+                {
+                    Button = { Color = buttonColor, Command = canAfford ? "kd.buylife" : "" },
+                    Text = { Text = canAfford ? "BUY LIFE" : "NOT ENOUGH TOKENS", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
+                    RectTransform = { AnchorMin = "0.10 0.05", AnchorMax = "0.90 0.25" }
+                }, "BuyLifeUI");
+                
+                CuiHelper.AddUi(player, container);
+            }
+            
+            /// <summary>
+            /// Show buy life UI to all dead players
+            /// </summary>
+            private void ShowBuyLifeUIToAllDead()
+            {
+                foreach (ulong steamId in _spectatingPlayers.ToList())
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player != null && player.IsConnected)
+                    {
+                        ShowBuyLifeUI(player);
+                    }
+                }
+            }
+            
+            /// <summary>
+            /// Hide buy life UI
+            /// </summary>
+            public void HideBuyLifeUI(BasePlayer player)
+            {
+                if (player != null)
+                {
+                    CuiHelper.DestroyUi(player, "BuyLifeUI");
+                }
+            }
+            
+            /// <summary>
+            /// Player attempts to buy their life back
+            /// </summary>
+            public bool TryBuyLife(BasePlayer player)
+            {
+                if (player == null) return false;
+                
+                var session = _plugin.GetSession(player.userID);
+                if (session == null) return false;
+                
+                // Check if in zombies mode and spectating
+                if (session.SelectedGameMode != GameMode.Zombies || !session.IsSpectating)
+                {
+                    _plugin.SendReply(player, "<color=#FF4444>You can only buy life while spectating in zombies mode!</color>");
+                    return false;
+                }
+                
+                // Check balance
+                if (session.Profile.Tokens < BUY_LIFE_COST)
+                {
+                    _plugin.SendReply(player, $"<color=#FF4444>Not enough tokens! Need {BUY_LIFE_COST}, you have {session.Profile.Tokens}</color>");
+                    return false;
+                }
+                
+                // Deduct tokens
+                session.Profile.Tokens -= BUY_LIFE_COST;
+                
+                // Revive the player
+                session.IsSpectating = false;
+                _spectatingPlayers.Remove(player.userID);
+                
+                // Hide UI
+                HideBuyLifeUI(player);
+                
+                // Cancel all-dead timer if someone is now alive
+                if (!AreAllPlayersDead())
+                {
+                    _allDeadTimer?.Destroy();
+                    _allDeadTimer = null;
+                }
+                
+                // Set flag to spawn at arena (not spectate)
+                session.IsBuyingLife = true;
+                
+                // Respawn and teleport to arena
+                player.Respawn();
+                _plugin.TeleportPlayer(player, _config.ZombiesArenaPosition);
+                _plugin.GiveLoadout(player);
+                
+                _plugin.SendReply(player, $"<color=#44FF44>Life purchased!</color> You're back in the fight! (-{BUY_LIFE_COST} tokens)");
+                _plugin.Puts($"Player {player.displayName} bought their life back for {BUY_LIFE_COST} tokens");
+                
+                // Update HUD
+                _plugin.UpdateZombieKillHUD(player, session);
+                
+                return true;
+            }
+            
+            /// <summary>
+            /// End zombies match
+            /// </summary>
+            public void EndZombiesMatch()
+            {
+                _zombiesMatchActive = false;
+                _zombiesLobbyWaiting = false;
+                
+                // Cancel all-dead timer
+                _allDeadTimer?.Destroy();
+                _allDeadTimer = null;
+                
+                // Stop zombie waves
+                _plugin._zombieIntegration.StopWaveMode();
+                _plugin._zombieIntegration.KillAllZombies();
+                
+                // Return all players to lobby and show match stats
+                foreach (ulong steamId in _zombiesQueue.ToList())
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player == null || !player.IsConnected) continue;
+                    
+                    var session = _plugin.GetSession(steamId);
+                    if (session == null) continue;
+                    
+                    // Hide buy life UI
+                    HideBuyLifeUI(player);
+                    
+                    // Show match stats summary
+                    ShowMatchEndStats(player, session);
+                    
+                    // Save profile (persistent tokens)
+                    _plugin._saveManager.SavePlayerProfile(session.Profile);
+                    
+                    session.IsInMatch = false;
+                    session.IsSpectating = false;
+                    session.SelectedGameMode = GameMode.None;
+                    session.CanLeaveMatch = true;
+                    
+                    // Reset current match stats for next match
+                    session.Profile.CurrentMatchKills = 0;
+                    session.Profile.CurrentMatchTokens = 0;
+                    
+                    // Hide HUD and lobby UI
+                    _plugin.RemoveZombieKillHUD(player);
+                    HideZombiesLobbyUI(player);
+                    
+                    _plugin.TeleportToLobby(player);
+                }
+                
+                _zombiesQueue.Clear();
+                _spectatingPlayers.Clear();
+                _zombiesHostId = 0;
+                
+                // Stop host UI timer
+                _hostUITimer?.Destroy();
+                _hostUITimer = null;
+                
+                _plugin.Puts("Zombies match ended!");
+            }
+            
+            /// <summary>
+            /// Show match end stats summary to player with all players' stats
+            /// </summary>
+            private void ShowMatchEndStats(BasePlayer player, PlayerSession session)
+            {
+                if (player == null || session == null) return;
+                
+                // Collect all players' match stats (both in queue and spectating)
+                var allPlayers = new List<(string name, int kills, int tokens)>();
+                var allSteamIds = new HashSet<ulong>(_zombiesQueue);
+                foreach (var spectateId in _spectatingPlayers)
+                {
+                    allSteamIds.Add(spectateId);
+                }
+                
+                foreach (ulong steamId in allSteamIds)
+                {
+                    var p = BasePlayer.FindByID(steamId);
+                    var s = _plugin.GetSession(steamId);
+                    if (s != null)
+                    {
+                        // Get player name from player or session profile
+                        string playerName = p?.displayName ?? s.Profile.DisplayName ?? "Unknown";
+                        allPlayers.Add((playerName, s.Profile.CurrentMatchKills, s.Profile.CurrentMatchTokens));
+                    }
+                }
+                
+                // Sort by kills descending
+                allPlayers = allPlayers.OrderByDescending(x => x.kills).ToList();
+                
+                // Create match stats summary UI
+                CuiHelper.DestroyUi(player, "MatchEndStats");
+                var container = new CuiElementContainer();
+                
+                // Background panel (taller to fit all player stats)
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.05 0.05 0.1 0.95" },
+                    RectTransform = { AnchorMin = "0.25 0.15", AnchorMax = "0.75 0.85" }
+                }, "Overlay", "MatchEndStats");
+                
+                // Title
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "━━━ MATCH COMPLETE ━━━", FontSize = 26, Align = TextAnchor.MiddleCenter, Color = "1 0.7 0.2 1" },
+                    RectTransform = { AnchorMin = "0 0.90", AnchorMax = "1 0.98" }
+                }, "MatchEndStats");
+                
+                // Your Stats Section
+                int myKills = session.Profile.CurrentMatchKills;
+                int myTokens = session.Profile.CurrentMatchTokens;
+                int highWave = session.Profile.HighestWave;
+                int totalTokens = session.Profile.Tokens;
+                
+                string yourStatsText = $"<color=#66FFFF>YOUR STATS:</color>\n" +
+                                       $"<color=#FF6666>💀 Kills:</color> {myKills}  |  " +
+                                       $"<color=#66FF66>🩸 Earned:</color> +{myTokens}  |  " +
+                                       $"<color=#6666FF>🏆 Best Wave:</color> {highWave}  |  " +
+                                       $"<color=#33FF99>💰 Total:</color> {totalTokens}";
+                
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = yourStatsText, FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
+                    RectTransform = { AnchorMin = "0.05 0.78", AnchorMax = "0.95 0.88" }
+                }, "MatchEndStats");
+                
+                // Separator
+                container.Add(new CuiPanel
+                {
+                    Image = { Color = "0.5 0.5 0.5 0.3" },
+                    RectTransform = { AnchorMin = "0.1 0.76", AnchorMax = "0.9 0.77" }
+                }, "MatchEndStats");
+                
+                // All Players Section Header
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "🏆 ALL PLAYERS - MATCH RESULTS 🏆", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 0.8 0.3 1" },
+                    RectTransform = { AnchorMin = "0 0.68", AnchorMax = "1 0.75" }
+                }, "MatchEndStats");
+                
+                // Column headers
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "#", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.05 0.62", AnchorMax = "0.12 0.68" }
+                }, "MatchEndStats");
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "PLAYER", FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.14 0.62", AnchorMax = "0.55 0.68" }
+                }, "MatchEndStats");
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "KILLS", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.55 0.62", AnchorMax = "0.72 0.68" }
+                }, "MatchEndStats");
+                container.Add(new CuiLabel
+                {
+                    Text = { Text = "TOKENS", FontSize = 12, Align = TextAnchor.MiddleCenter, Color = "0.7 0.7 0.7 1" },
+                    RectTransform = { AnchorMin = "0.72 0.62", AnchorMax = "0.95 0.68" }
+                }, "MatchEndStats");
+                
+                // Player rows (up to 8 players shown)
+                float rowHeight = 0.055f;
+                float startY = 0.56f;
+                int maxRows = Math.Min(allPlayers.Count, 8);
+                
+                for (int i = 0; i < maxRows; i++)
+                {
+                    var (name, kills, tokens) = allPlayers[i];
+                    float yPos = startY - (i * rowHeight);
+                    
+                    string bgColor = name == player.displayName ? "0.2 0.3 0.2 0.6" : "0.08 0.08 0.1 0.5";
+                    string rowName = $"PlayerRow_{i}";
+                    
+                    container.Add(new CuiPanel
+                    {
+                        Image = { Color = bgColor },
+                        RectTransform = { AnchorMin = $"0.05 {yPos}", AnchorMax = $"0.95 {yPos + rowHeight - 0.005f}" }
+                    }, "MatchEndStats", rowName);
+                    
+                    // Rank with medal
+                    string rankText = i == 0 ? "🥇" : i == 1 ? "🥈" : i == 2 ? "🥉" : $"#{i + 1}";
+                    string rankColor = i == 0 ? "1 0.85 0 1" : i == 1 ? "0.8 0.8 0.9 1" : i == 2 ? "0.8 0.5 0.2 1" : "1 1 1 0.8";
+                    
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = rankText, FontSize = 14, Align = TextAnchor.MiddleCenter, Color = rankColor },
+                        RectTransform = { AnchorMin = "0 0", AnchorMax = "0.10 1" }
+                    }, rowName);
+                    
+                    // Name
+                    string displayName = name.Length > 16 ? name.Substring(0, 16) + "..." : name;
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = displayName, FontSize = 12, Align = TextAnchor.MiddleLeft, Color = "1 1 1 0.9" },
+                        RectTransform = { AnchorMin = "0.12 0", AnchorMax = "0.54 1" }
+                    }, rowName);
+                    
+                    // Kills
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = kills.ToString(), FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.8 0.3 0.3 1" },
+                        RectTransform = { AnchorMin = "0.54 0", AnchorMax = "0.72 1" }
+                    }, rowName);
+                    
+                    // Tokens
+                    container.Add(new CuiLabel
+                    {
+                        Text = { Text = $"+{tokens}", FontSize = 14, Align = TextAnchor.MiddleCenter, Color = "0.3 0.8 0.3 1" },
+                        RectTransform = { AnchorMin = "0.72 0", AnchorMax = "0.98 1" }
+                    }, rowName);
+                }
+                
+                // Close button
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.3 0.6 0.3 0.8", Command = "matchstats.close" },
+                    Text = { Text = "CONTINUE", FontSize = 16, Align = TextAnchor.MiddleCenter, Color = "1 1 1 1" },
+                    RectTransform = { AnchorMin = "0.35 0.02", AnchorMax = "0.65 0.09" }
+                }, "MatchEndStats");
+                
+                CuiHelper.AddUi(player, container);
+                
+                // Auto-close after 15 seconds
+                _plugin.timer.Once(15f, () =>
+                {
+                    if (player != null && player.IsConnected)
+                    {
+                        CuiHelper.DestroyUi(player, "MatchEndStats");
+                    }
+                });
+            }
+            
+            /// <summary>
+            /// End normal match
+            /// </summary>
+            public void EndNormalMatch()
+            {
+                _normalMatchActive = false;
+                
+                // Return all players to lobby
+                foreach (ulong steamId in _normalQueue.ToList())
+                {
+                    var player = BasePlayer.FindByID(steamId);
+                    if (player == null || !player.IsConnected) continue;
+                    
+                    var session = _plugin.GetSession(steamId);
+                    if (session == null) continue;
+                    
+                    session.IsInMatch = false;
+                    session.SelectedGameMode = GameMode.None;
+                    session.CanLeaveMatch = true;
+                    
+                    _plugin.TeleportToLobby(player);
+                }
+                
+                _normalQueue.Clear();
+                
+                _plugin.Puts("Normal match ended!");
+            }
+            
+            /// <summary>
+            /// Check if zombies match is active
+            /// </summary>
+            public bool IsZombiesMatchActive() => _zombiesMatchActive;
+            
+            /// <summary>
+            /// Check if normal match is active
+            /// </summary>
+            public bool IsNormalMatchActive() => _normalMatchActive;
+            
+            /// <summary>
+            /// Get the game mode a player is currently in
+            /// </summary>
+            public GameMode GetPlayerMode(ulong steamId)
+            {
+                if (_zombiesQueue.Contains(steamId) || _spectatingPlayers.Contains(steamId))
+                    return GameMode.Zombies;
+                if (_normalQueue.Contains(steamId))
+                    return GameMode.Normal;
+                return GameMode.None;
+            }
+            
+            /// <summary>
+            /// Get pending confirmation for a player
+            /// </summary>
+            public GameMode GetPendingConfirmation(ulong steamId)
+            {
+                return _pendingConfirmation.ContainsKey(steamId) ? _pendingConfirmation[steamId] : GameMode.None;
             }
         }
         

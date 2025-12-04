@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Oxide.Core;
+using Oxide.Core.Plugins;
 using UnityEngine;
 using Rust;
 using Newtonsoft.Json;
@@ -9,8 +10,8 @@ using Newtonsoft.Json;
 // hop-like movement, fire/flies/gore VFX, and CUI wave/stage banners.
 namespace Oxide.Plugins
 {
-    [Info("NecroZombies", "belisario-afk", "2.3.0")]
-    [Description("Spawns fast, aggressive scarecrow-based zombies and hellhounds with spawn sets, drip waves, CUI, and horror VFX")]
+    [Info("NecroZombies", "belisario-afk", "3.2.0")]
+    [Description("Spawns Necro Zombie, Runner, Brute, and Hellhound variants with Black Ops style waves")]
     public class NecroZombies : RustPlugin
     {
         #region Configuration
@@ -22,43 +23,61 @@ namespace Oxide.Plugins
             public string ProfileName = "default";
 
             public float Health = 100f;
-            public float Speed = 6.5f;
+            public float Speed = 3.5f;  // Walking speed by default
 
-            public string MeleeShortname = "knife.bone";
-            public ulong MeleeSkinId = 3612162757;
+            public string MeleeShortname = "bone.club";  // Bone club for melee attacks
+            public ulong MeleeSkinId = 0;
 
+            // Primary clothing item
             public string ClothingShortname = "halloween.mummysuit";
             public ulong ClothingSkinId = 0;
+            
+            // Additional clothing items for complex outfits
+            public string HeadwearShortname = "";
+            public long HeadwearSkinId = 0;
+            
+            public string ShirtShortname = "";
+            public long ShirtSkinId = 0;
+            
+            public string PantsShortname = "";
+            public long PantsSkinId = 0;
 
             public string DisplayName = "Necro Zombie";
 
             public bool AlwaysOnFire = true;
+            
+            // Prefab to use (scarecrow or zombie)
+            public string PrefabType = "scarecrow";  // "scarecrow" or "zombie"
+            
+            // Brute's explosive ability
+            public bool ExplodeOnProximity = false;
+            public float ExplosionProximity = 2.5f;  // Distance to trigger explosion
         }
 
         private class WaveSettings
         {
-            // Total zombies per wave
-            public int BaseCount = 12;
-            public int CountPerWaveIncrease = 4;
+            // Total zombies per wave - Black Ops style: start small, grow steadily
+            public int BaseCount = 6;                 // Wave 1: 6 zombies
+            public int CountPerWaveIncrease = 2;      // +2 per wave (Wave 2: 8, Wave 3: 10, etc.)
 
             // Stat scaling per wave
             public float HealthMultiplierPerWave = 0.1f;
-            public float SpeedMultiplierPerWave = 0.05f;
+            public float SpeedMultiplierPerWave = 0.03f;  // Slower speed increase
 
             public int MaxWaves = 0;              // 0 = endless
 
-            public int MaxActiveZombies = 40;     // global hard cap
+            public int MaxActiveZombies = 24;     // Lower cap for early waves
 
-            // Wave progression logic
-            public float RequiredKillRatioToAdvance = 0.9f;
-            public float WaveStartDelay = 5f;
-            public float WaveTimeoutSeconds = 120f;
+            // Wave progression logic - Black Ops style: ALL zombies must die
+            public float RequiredKillRatioToAdvance = 1.0f;  // 100% - last zombie must die
+            public float WaveStartDelay = 8f;                 // Longer break between waves
+            public float WaveTimeoutSeconds = 0f;             // 0 = no timeout, must kill all
 
-            // Drip spawning inside a wave
-            public int GroupSize = 3;
-            public float SpawnIntervalSeconds = 2.5f;
-            public float SpawnIntervalMinSeconds = 1.0f;
-            public float SpawnIntervalPerWaveMultiplier = 0.9f;
+            // Drip spawning inside a wave - slower spawning for early waves
+            public int GroupSize = 2;                         // Spawn 2 at a time
+            public float SpawnIntervalSeconds = 4.0f;         // 4 seconds between spawns
+            public float SpawnIntervalMinSeconds = 1.5f;      // Minimum interval
+            public float SpawnIntervalPerWaveMultiplier = 0.92f; // Gets faster each wave
 
             // CUI wave banner settings
             public bool EnableWaveBanner = true;
@@ -69,12 +88,20 @@ namespace Oxide.Plugins
             public int BannerSubSize = 18;
         }
 
+        // Zone definition - links spawn sets to doors
+        private class ZoneData
+        {
+            public string ZoneName = "";
+            public string LinkedDoorId = "";  // ZombieDoors door ID (optional)
+            public bool IsUnlocked = true;    // Zones without doors are unlocked by default
+        }
+
         private class ConfigData
         {
             public float ZombieHealth = 100f;
-            public float ZombieSpeed = 6.5f;
-            public string MeleeShortname = "knife.bone";
-            public ulong MeleeSkinId = 3612162757;
+            public float ZombieSpeed = 3.5f;  // Walking speed, not running
+            public string MeleeShortname = "bone.club";  // Bone club for melee
+            public ulong MeleeSkinId = 0;
             public string ClothingShortname = "halloween.mummysuit";
             public ulong ClothingSkinId = 0;
             public string ZombieName = "Necro Zombie";
@@ -83,6 +110,9 @@ namespace Oxide.Plugins
             public WaveSettings Waves = new WaveSettings();
 
             public Dictionary<string, List<Vector3>> SpawnSets = new Dictionary<string, List<Vector3>>();
+            
+            // Zone system - link spawn sets to doors
+            public Dictionary<string, ZoneData> Zones = new Dictionary<string, ZoneData>();
         }
 
         protected override void LoadDefaultConfig()
@@ -93,65 +123,86 @@ namespace Oxide.Plugins
             {
                 ProfileName = "default",
                 Health = _config.ZombieHealth,
-                Speed = _config.ZombieSpeed,
-                MeleeShortname = _config.MeleeShortname,
-                MeleeSkinId = _config.MeleeSkinId,
+                Speed = 3.5f,  // Walking speed
+                MeleeShortname = "bone.club",
+                MeleeSkinId = 0,
                 ClothingShortname = _config.ClothingShortname,
                 ClothingSkinId = _config.ClothingSkinId,
                 DisplayName = _config.ZombieName,
-                AlwaysOnFire = true
+                AlwaysOnFire = true,
+                PrefabType = "scarecrow"
             };
 
+            // Necro Runner - Slightly faster walker with hoodie outfit
             _config.Profiles["runner"] = new ZombieProfile
             {
                 ProfileName = "runner",
                 Health = 75f,
-                Speed = 10f,
-                MeleeShortname = "knife.bone",
-                MeleeSkinId = _config.MeleeSkinId,
-                ClothingShortname = "halloween.mummysuit",
+                Speed = 5f,  // Faster walk, still not running
+                MeleeShortname = "bone.club",
+                MeleeSkinId = 0,
+                ClothingShortname = "",  // No primary clothing
                 ClothingSkinId = 0,
+                HeadwearShortname = "mask.balaclava",
+                HeadwearSkinId = 539536877,
+                ShirtShortname = "hoodie",
+                ShirtSkinId = 10052,
+                PantsShortname = "pants",
+                PantsSkinId = 1883629284,
                 DisplayName = "Necro Runner",
-                AlwaysOnFire = true
+                AlwaysOnFire = false,  // No fire, stealthy look
+                PrefabType = "scarecrow"  // Use scarecrow for reliable brain/AI
             };
 
+            // Necro Brute - Explosive head, no melee, wellipets + jumpsuit + mummy
             _config.Profiles["brute"] = new ZombieProfile
             {
                 ProfileName = "brute",
-                Health = 250f,
-                Speed = 5f,
-                MeleeShortname = "mace.base",
+                Health = 300f,
+                Speed = 2.5f,  // Slow walking tank
+                MeleeShortname = "",  // No melee weapon
                 MeleeSkinId = 0,
                 ClothingShortname = "halloween.mummysuit",
                 ClothingSkinId = 0,
+                HeadwearShortname = "hat.wolf",  // Wellipets hat
+                HeadwearSkinId = (long)-507248640,
+                ShirtShortname = "jumpsuit.suit",
+                ShirtSkinId = (long)-97459906,
+                PantsShortname = "",
+                PantsSkinId = 0,
                 DisplayName = "Necro Brute",
-                AlwaysOnFire = true
+                AlwaysOnFire = true,
+                PrefabType = "scarecrow",
+                ExplodeOnProximity = true,
+                ExplosionProximity = 2.5f
             };
 
             _config.Profiles["burner"] = new ZombieProfile
             {
                 ProfileName = "burner",
                 Health = 120f,
-                Speed = 7.5f,
-                MeleeShortname = "knife.bone",
-                MeleeSkinId = _config.MeleeSkinId,
+                Speed = 4f,  // Walking speed
+                MeleeShortname = "bone.club",
+                MeleeSkinId = 0,
                 ClothingShortname = "halloween.mummysuit",
                 ClothingSkinId = 0,
                 DisplayName = "Necro Burner",
-                AlwaysOnFire = true
+                AlwaysOnFire = true,
+                PrefabType = "scarecrow"
             };
 
             _config.Profiles["stalker"] = new ZombieProfile
             {
                 ProfileName = "stalker",
                 Health = 125f,
-                Speed = 8.0f,
-                MeleeShortname = "knife.bone",
-                MeleeSkinId = _config.MeleeSkinId,
+                Speed = 4.5f,  // Walking speed
+                MeleeShortname = "bone.club",
+                MeleeSkinId = 0,
                 ClothingShortname = "halloween.mummysuit",
                 ClothingSkinId = 0,
                 DisplayName = "Necro Stalker",
-                AlwaysOnFire = true
+                AlwaysOnFire = true,
+                PrefabType = "scarecrow"
             };
 
             // Hellhound profile (used for wolves)
@@ -159,7 +210,7 @@ namespace Oxide.Plugins
             {
                 ProfileName = "hellhound",
                 Health = 150f,
-                Speed = 9.0f,
+                Speed = 7.0f,  // Hellhounds can be faster
                 MeleeShortname = "",
                 MeleeSkinId = 0,
                 ClothingShortname = "",
@@ -237,25 +288,37 @@ namespace Oxide.Plugins
 
         #region Constants & State
 
-        private const string ZombiePrefab = "assets/prefabs/npc/scarecrow/scarecrow_dungeonnoroam.prefab";
+        private const string ScarecrowPrefab = "assets/prefabs/npc/scarecrow/scarecrow_dungeonnoroam.prefab";
+        private const string ZombiePrefab = "assets/rust.ai/agents/zombie/zombie.prefab";
         private const string WolfPrefab = "assets/rust.ai/agents/wolf/wolf.prefab";
+        
+        // Explosive prefab for Brute
+        private const string BeancanPrefab = "assets/prefabs/weapons/beancan grenade/grenade.beancan.deployed.prefab";
+        private const string ExplosionEffect = "assets/prefabs/weapons/beancan grenade/effects/beancan_grenade_explosion.prefab";
 
         private const float RaycastMaxDistance = 200f;
 
-        // Fire & gore VFX
+        // VFX effects
         private const string BurnEffectPrefab = "assets/bundled/prefabs/fx/fire/fire_v3.prefab";
         private const string BloodSlashEffect = "assets/bundled/prefabs/fx/impacts/slash/blood14slash.prefab";
-        private const string FliesMediumEffect = "assets/bundled/prefabs/fx/animals/flies/flies_medium.prefab";
-        private const string FliesLoopEffect = "assets/bundled/prefabs/fx/animals/flies/flies_looping.prefab";
+        // Blood splatter decal for hellhound red appearance
+        private const string BloodSplatterDecal = "assets/bundled/prefabs/fx/decals/blood/decal_blood_splatter_01.prefab";
         private const string EatCeleryEffect = "assets/bundled/prefabs/fx/gestures/eat_celery.prefab";
         private const string DrinkVomitEffect = "assets/bundled/prefabs/fx/gestures/drink_vomit.prefab";
+        
+        // Attack effects
+        private const string MeleeHitEffect = "assets/bundled/prefabs/fx/player/beartrap_blood.prefab";
+        private const string SwingEffect = "assets/bundled/prefabs/fx/weapons/machete/slash.prefab";
 
         // CUI IDs
         private const string WaveBannerPanel = "NecroWaveBanner.Panel";
         private const string WaveBannerTitle = "NecroWaveBanner.Title";
         private const string WaveBannerSubtitle = "NecroWaveBanner.Subtitle";
+        private const string WaveHudPanel = "NecroWaveHud.Panel";
+        private const string WaveHudText = "NecroWaveHud.Text";
 
         private readonly HashSet<BaseEntity> _activeZombies = new HashSet<BaseEntity>();
+        private readonly HashSet<BaseEntity> _hellhoundsOnFire = new HashSet<BaseEntity>();
 
         // Wave state
         private bool _waveModeActive;
@@ -273,32 +336,131 @@ namespace Oxide.Plugins
 
         private Timer _waveSpawnTimer;
         private Timer _waveCheckTimer;
-        private Timer _hopTimer;
+        private Timer _zombieAITimer;  // Main zombie AI tick - movement, attacks, targeting
+        private Timer _hellhoundTimer;
+        private Timer _waveHudTimer;
+        private Timer _bruteTimer;
 
         private bool _loggedTypeOnce;
+        
+        // Track zombie attack cooldowns and states
+        private Dictionary<uint, float> _zombieAttackCooldowns = new Dictionary<uint, float>();
+        private Dictionary<uint, float> _zombieLungeTimers = new Dictionary<uint, float>();
+        private Dictionary<uint, ZombieBehaviorState> _zombieStates = new Dictionary<uint, ZombieBehaviorState>();
+        
+        private class ZombieBehaviorState
+        {
+            public float BaseSpeed;
+            public float CurrentSpeed;
+            public bool IsLunging;
+            public float LungeEndTime;
+            public float NextAttackTime;
+            public float LastTargetUpdateTime;
+            public Vector3 LastKnownTargetPos;
+            public ulong TargetPlayerId;
+        }
+        
+        // Reference to ZombieDoors plugin for checking door status
+        [PluginReference] Plugin ZombieDoors;
 
+        #endregion
+
+        #region Zone System
+        
+        /// <summary>
+        /// Check if a zone is unlocked (either no door, or door is open)
+        /// </summary>
+        private bool IsZoneUnlocked(string zoneName)
+        {
+            if (_config.Zones == null || !_config.Zones.TryGetValue(zoneName, out var zone))
+                return true;  // No zone config = treat as unlocked
+                
+            // No linked door = always unlocked
+            if (string.IsNullOrEmpty(zone.LinkedDoorId))
+                return true;
+                
+            // Check if ZombieDoors plugin says this door is open
+            if (ZombieDoors != null)
+            {
+                var result = ZombieDoors.Call("IsDoorOpen", zone.LinkedDoorId);
+                if (result is bool isOpen)
+                    return isOpen;
+            }
+            
+            // Fallback: use stored state
+            return zone.IsUnlocked;
+        }
+        
+        /// <summary>
+        /// Get all unlocked spawn sets for current wave
+        /// Only spawns zombies from zones that are unlocked (door opened or no door)
+        /// </summary>
+        private List<Vector3> GetUnlockedSpawnPoints()
+        {
+            var unlockedPoints = new List<Vector3>();
+            
+            if (_config.SpawnSets == null || _config.SpawnSets.Count == 0)
+                return unlockedPoints;
+                
+            foreach (var kvp in _config.SpawnSets)
+            {
+                string setName = kvp.Key;
+                var points = kvp.Value;
+                
+                if (points == null || points.Count == 0)
+                    continue;
+                
+                // Check if this spawn set's zone is unlocked
+                if (IsZoneUnlocked(setName))
+                {
+                    unlockedPoints.AddRange(points);
+                }
+            }
+            
+            return unlockedPoints;
+        }
+        
         #endregion
 
         #region Hooks
 
         private void Init()
         {
+            Puts($"[NecroZombies] Using scarecrow prefab: {ScarecrowPrefab}");
             Puts($"[NecroZombies] Using zombie prefab: {ZombiePrefab}");
-            _hopTimer = timer.Every(1f, HopTick);
+            
+            // Main zombie AI tick - handles movement, targeting, attacks, lunges
+            _zombieAITimer = timer.Every(0.15f, ZombieAITick);  // ~7 times per second for smooth movement
+            _hellhoundTimer = timer.Every(0.5f, HellhoundTick);
+            _bruteTimer = timer.Every(0.3f, BruteTick);  // Check brute proximity every 0.3s
         }
 
         private void Unload()
         {
-            _hopTimer?.Destroy();
-            _hopTimer = null;
+            _zombieAITimer?.Destroy();
+            _zombieAITimer = null;
+            
+            _hellhoundTimer?.Destroy();
+            _hellhoundTimer = null;
+            
+            _bruteTimer?.Destroy();
+            _bruteTimer = null;
+            
+            _waveHudTimer?.Destroy();
+            _waveHudTimer = null;
 
             _waveSpawnTimer?.Destroy();
             _waveSpawnTimer = null;
 
             _waveCheckTimer?.Destroy();
             _waveCheckTimer = null;
+            
+            _zombieAttackCooldowns.Clear();
+            _zombieLungeTimers.Clear();
+            _zombieStates.Clear();
 
             DestroyWaveBannerForAll();
+            DestroyWaveHudForAll();
             KillAllZombiesInternal();
         }
 
@@ -313,6 +475,12 @@ namespace Oxide.Plugins
 
             if (_currentWaveZombies.Contains(be))
                 _currentWaveZombies.Remove(be);
+            
+            if (_hellhoundsOnFire.Contains(be))
+                _hellhoundsOnFire.Remove(be);
+                
+            if (_explosiveBrutes.Contains(be))
+                _explosiveBrutes.Remove(be);
         }
 
         private void OnEntityTakeDamage(BaseCombatEntity entity, HitInfo info)
@@ -507,22 +675,160 @@ namespace Oxide.Plugins
 
             if (_config.SpawnSets == null || _config.SpawnSets.Count == 0)
             {
-                SendReply(player, "<color=#ffcc55>No spawn sets configured.</color>");
+                SendReply(player, "<color=#ffcc55>No spawn sets configured. Use /zspawnadd <setname> to add spawn points.</color>");
                 return;
             }
 
-            Puts("[NecroZombies] Spawn sets:");
+            SendReply(player, "<color=#00ffff>===== Spawn Sets =====</color>");
             foreach (var kvp in _config.SpawnSets)
             {
-                Puts($"  Set '{kvp.Key}': {kvp.Value.Count} point(s)");
+                // Check if this set has a zone linked
+                string zoneInfo = "";
+                if (_config.Zones != null && _config.Zones.TryGetValue(kvp.Key, out var zone))
+                {
+                    bool unlocked = IsZoneUnlocked(kvp.Key);
+                    string doorInfo = string.IsNullOrEmpty(zone.LinkedDoorId) ? "no door" : $"door:{zone.LinkedDoorId}";
+                    zoneInfo = $" [Zone: {doorInfo}, {(unlocked ? "<color=#55ff55>UNLOCKED</color>" : "<color=#ff5555>LOCKED</color>")}]";
+                }
+                
+                SendReply(player, $"<color=#55ff55>Set '{kvp.Key}':</color> {kvp.Value.Count} point(s){zoneInfo}");
+                Puts($"[NecroZombies] Set '{kvp.Key}': {kvp.Value.Count} point(s)");
                 int idx = 0;
                 foreach (var p in kvp.Value)
                 {
+                    SendReply(player, $"  <color=#aaaaaa>[{idx}]</color> {p.x:F1}, {p.y:F1}, {p.z:F1}");
                     Puts($"    [{idx++}] {p}");
                 }
             }
+            
+            // Show current wave mode status
+            if (_waveModeActive)
+            {
+                SendReply(player, $"<color=#ffff00>Wave mode active:</color> Using spawn set '{_waveSpawnSetName ?? "none (fallback center)"}'");
+            }
+        }
+        
+        // /zzone create <zoneName> - Create a zone for a spawn set
+        [ChatCommand("zzone")]
+        private void CmdZZone(BasePlayer player, string command, string[] args)
+        {
+            if (player == null || !player.IsValid())
+                return;
 
-            SendReply(player, "<color=#55ff55>Spawn set info printed to server console.</color>");
+            if (!player.IsAdmin)
+            {
+                SendReply(player, "<color=#ff5555>You must be an admin to use this command.</color>");
+                return;
+            }
+
+            if (args.Length < 1)
+            {
+                SendReply(player, "<color=#ffcc55>Usage:</color>");
+                SendReply(player, "  /zzone create <zoneName> - Create zone (use same name as spawn set)");
+                SendReply(player, "  /zzone linkdoor <zoneName> <doorId> - Link zone to a ZombieDoor");
+                SendReply(player, "  /zzone unlinkdoor <zoneName> - Unlink door from zone");
+                SendReply(player, "  /zzone list - List all zones and their status");
+                return;
+            }
+
+            string action = args[0].ToLower();
+
+            if (action == "create")
+            {
+                if (args.Length < 2)
+                {
+                    SendReply(player, "<color=#ff5555>Usage: /zzone create <zoneName></color>");
+                    return;
+                }
+                
+                string zoneName = args[1].ToLower();
+                
+                if (_config.Zones == null)
+                    _config.Zones = new Dictionary<string, ZoneData>();
+                    
+                if (_config.Zones.ContainsKey(zoneName))
+                {
+                    SendReply(player, $"<color=#ff5555>Zone '{zoneName}' already exists!</color>");
+                    return;
+                }
+                
+                _config.Zones[zoneName] = new ZoneData
+                {
+                    ZoneName = zoneName,
+                    LinkedDoorId = "",
+                    IsUnlocked = true  // No door = always unlocked
+                };
+                SaveConfig();
+                
+                SendReply(player, $"<color=#55ff55>Created zone '{zoneName}'. Use /zzone linkdoor {zoneName} <doorId> to link to a door.</color>");
+            }
+            else if (action == "linkdoor")
+            {
+                if (args.Length < 3)
+                {
+                    SendReply(player, "<color=#ff5555>Usage: /zzone linkdoor <zoneName> <doorId></color>");
+                    return;
+                }
+                
+                string zoneName = args[1].ToLower();
+                string doorId = args[2];
+                
+                if (_config.Zones == null || !_config.Zones.ContainsKey(zoneName))
+                {
+                    SendReply(player, $"<color=#ff5555>Zone '{zoneName}' not found! Create it first with /zzone create {zoneName}</color>");
+                    return;
+                }
+                
+                _config.Zones[zoneName].LinkedDoorId = doorId;
+                _config.Zones[zoneName].IsUnlocked = false;  // Door-linked zones start locked
+                SaveConfig();
+                
+                SendReply(player, $"<color=#55ff55>Linked zone '{zoneName}' to door '{doorId}'. Zombies won't spawn here until door is opened.</color>");
+            }
+            else if (action == "unlinkdoor")
+            {
+                if (args.Length < 2)
+                {
+                    SendReply(player, "<color=#ff5555>Usage: /zzone unlinkdoor <zoneName></color>");
+                    return;
+                }
+                
+                string zoneName = args[1].ToLower();
+                
+                if (_config.Zones == null || !_config.Zones.ContainsKey(zoneName))
+                {
+                    SendReply(player, $"<color=#ff5555>Zone '{zoneName}' not found!</color>");
+                    return;
+                }
+                
+                _config.Zones[zoneName].LinkedDoorId = "";
+                _config.Zones[zoneName].IsUnlocked = true;
+                SaveConfig();
+                
+                SendReply(player, $"<color=#55ff55>Unlinked door from zone '{zoneName}'. Zone is now always unlocked.</color>");
+            }
+            else if (action == "list")
+            {
+                if (_config.Zones == null || _config.Zones.Count == 0)
+                {
+                    SendReply(player, "<color=#ffcc55>No zones configured. Use /zzone create <name> to create one.</color>");
+                    return;
+                }
+                
+                SendReply(player, "<color=#00ffff>===== Zones =====</color>");
+                foreach (var kvp in _config.Zones)
+                {
+                    var zone = kvp.Value;
+                    bool unlocked = IsZoneUnlocked(kvp.Key);
+                    string doorInfo = string.IsNullOrEmpty(zone.LinkedDoorId) ? "no door" : $"door:{zone.LinkedDoorId}";
+                    string status = unlocked ? "<color=#55ff55>UNLOCKED</color>" : "<color=#ff5555>LOCKED</color>";
+                    SendReply(player, $"  <color=#55ff55>{kvp.Key}:</color> {doorInfo} - {status}");
+                }
+            }
+            else
+            {
+                SendReply(player, "<color=#ff5555>Unknown action. Use: create, linkdoor, unlinkdoor, or list</color>");
+            }
         }
 
         #endregion
@@ -573,6 +879,33 @@ namespace Oxide.Plugins
                 AlwaysOnFire = true
             };
         }
+        
+        /// <summary>
+        /// Find the nearest player to a given position within maxRange
+        /// </summary>
+        private BasePlayer FindNearestPlayer(Vector3 position, float maxRange = 100f)
+        {
+            BasePlayer nearestPlayer = null;
+            float nearestDist = maxRange;
+            
+            foreach (var player in BasePlayer.activePlayerList)
+            {
+                if (player == null || player.IsDead() || player.IsSleeping())
+                    continue;
+                    
+                float dist = Vector3.Distance(player.transform.position, position);
+                if (dist < nearestDist)
+                {
+                    nearestDist = dist;
+                    nearestPlayer = player;
+                }
+            }
+            
+            return nearestPlayer;
+        }
+        
+        // Track brutes for proximity explosion check
+        private HashSet<BaseEntity> _explosiveBrutes = new HashSet<BaseEntity>();
 
         private bool SpawnNecroZombie(Vector3 position, ZombieProfile profile, bool trackForWave)
         {
@@ -581,10 +914,15 @@ namespace Oxide.Plugins
             if (_activeZombies.Count >= waves.MaxActiveZombies)
                 return false;
 
-            BaseEntity entity = GameManager.server.CreateEntity(ZombiePrefab, position, Quaternion.identity, true);
+            // Choose prefab based on profile type
+            string prefabPath = ScarecrowPrefab;
+            if (profile.PrefabType == "zombie")
+                prefabPath = ZombiePrefab;
+
+            BaseEntity entity = GameManager.server.CreateEntity(prefabPath, position, Quaternion.identity, true);
             if (entity == null)
             {
-                PrintWarning($"[NecroZombies] Failed to create entity. Prefab path: {ZombiePrefab}");
+                PrintWarning($"[NecroZombies] Failed to create entity. Prefab path: {prefabPath}");
                 return false;
             }
 
@@ -593,22 +931,21 @@ namespace Oxide.Plugins
 
             if (trackForWave)
                 _currentWaveZombies.Add(entity);
+                
+            // Track brutes for explosion proximity check
+            if (profile.ExplodeOnProximity)
+                _explosiveBrutes.Add(entity);
 
             if (!_loggedTypeOnce)
             {
                 _loggedTypeOnce = true;
-                Puts($"[NecroZombies] Spawned entity type: {entity.GetType().FullName}");
+                Puts($"[NecroZombies] Spawned entity type: {entity.GetType().FullName} ({profile.ProfileName})");
             }
 
             if (profile.AlwaysOnFire)
             {
                 entity.SetFlag(BaseEntity.Flags.OnFire, true);
                 entity.SendNetworkUpdate();
-            }
-
-            if (!string.IsNullOrEmpty(FliesMediumEffect))
-            {
-                Effect.server.Run(FliesMediumEffect, entity.transform.position + Vector3.up * 1.2f, Vector3.up, null);
             }
 
             var npc = entity as NPCPlayer;
@@ -623,6 +960,33 @@ namespace Oxide.Plugins
 
                 if (!string.IsNullOrEmpty(profile.DisplayName))
                     npc.displayName = profile.DisplayName;
+                
+                // IMMEDIATE targeting - find nearest player and chase
+                var nearestPlayer = FindNearestPlayer(position, 500f);
+                if (nearestPlayer != null && npc.NavAgent != null)
+                {
+                    // Set destination to player
+                    if (npc.NavAgent.isOnNavMesh)
+                    {
+                        npc.NavAgent.SetDestination(nearestPlayer.transform.position);
+                        npc.NavAgent.isStopped = false;
+                    }
+                    else
+                    {
+                        // Try to warp to navmesh first
+                        UnityEngine.AI.NavMeshHit hit;
+                        if (UnityEngine.AI.NavMesh.SamplePosition(position, out hit, 10f, -1))
+                        {
+                            npc.NavAgent.Warp(hit.position);
+                            // Only set destination if warp succeeded and we're on navmesh
+                            if (npc.NavAgent.isOnNavMesh)
+                            {
+                                npc.NavAgent.SetDestination(nearestPlayer.transform.position);
+                                npc.NavAgent.isStopped = false;
+                            }
+                        }
+                    }
+                }
             }
 
             return true;
@@ -654,25 +1018,49 @@ namespace Oxide.Plugins
                 Puts($"[NecroZombies] Spawned entity type: {entity.GetType().FullName} (hellhound)");
             }
 
-            if (profile.AlwaysOnFire)
+            // Configure wolf as hostile hellhound - NEVER run away, always chase players
+            var wolf = entity as BaseNpc;
+            if (wolf != null)
             {
-                entity.SetFlag(BaseEntity.Flags.OnFire, true);
-                entity.SendNetworkUpdate();
+                // Set health
+                wolf.startHealth = profile.Health;
+                wolf.health = profile.Health;
+                wolf.InitializeHealth(profile.Health, profile.Health);
+                
+                // Make wolf aggressive - NEVER afraid, ALWAYS attack
+                wolf.SetFact(BaseNpc.Facts.IsAggro, 1);
+                wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
+                wolf.SetFact(BaseNpc.Facts.IsAfraid, 0);
+                
+                // Find nearest player anywhere on map and set as target
+                var nearestPlayer = FindNearestPlayer(position, 500f);
+                if (nearestPlayer != null)
+                {
+                    wolf.AttackTarget = nearestPlayer;
+                    wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
+                }
+                
+                // Maximum aggression range - wolves will chase across the map
+                wolf.Stats.VisionRange = 200f;
+                wolf.Stats.AggressionRange = 200f;
+                wolf.Stats.DeaggroRange = 500f;  // Never deaggro
             }
 
-            if (!string.IsNullOrEmpty(BurnEffectPrefab))
-            {
-                Effect.server.Run(BurnEffectPrefab, entity.transform.position + Vector3.up * 0.1f, Vector3.up, null);
-            }
+            // Store reference for continuous blood effect and aggression maintenance
+            _hellhoundsOnFire.Add(entity);
 
-            // Optional: small flies at body height
-            if (!string.IsNullOrEmpty(FliesMediumEffect))
+            // Apply blood splatter decal at multiple heights to cover the whole wolf in red
+            if (!string.IsNullOrEmpty(BloodSplatterDecal))
             {
-                Effect.server.Run(FliesMediumEffect, entity.transform.position + Vector3.up * 0.5f, Vector3.up, null);
+                // Low (legs/ground level)
+                Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.1f, Vector3.up, null);
+                // Mid (body)
+                Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.4f, Vector3.up, null);
+                // Upper body
+                Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.7f, Vector3.up, null);
+                // Head
+                Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.9f, Vector3.up, null);
             }
-
-            // Most wolf prefabs are BaseNpc; if you want to directly tweak HP/speed we can experiment further.
-            // For now we rely on base stats + AlwaysOnFire VFX.
 
             return true;
         }
@@ -704,6 +1092,7 @@ namespace Oxide.Plugins
                 PrintWarning($"[NecroZombies] Error stripping NPC inventory: {e}");
             }
 
+            // Add melee weapon (if configured)
             if (!string.IsNullOrEmpty(profile.MeleeShortname))
             {
                 Item melee = ItemManager.CreateByName(profile.MeleeShortname, 1, profile.MeleeSkinId);
@@ -719,6 +1108,7 @@ namespace Oxide.Plugins
                 }
             }
 
+            // Add primary clothing (mummy suit, etc.)
             if (!string.IsNullOrEmpty(profile.ClothingShortname))
             {
                 Item clothing = ItemManager.CreateByName(profile.ClothingShortname, 1, profile.ClothingSkinId);
@@ -730,6 +1120,42 @@ namespace Oxide.Plugins
                 else
                 {
                     PrintWarning($"[NecroZombies] Failed to create clothing item: '{profile.ClothingShortname}'");
+                }
+            }
+            
+            // Add headwear (balaclava, wellipets hat, etc.)
+            if (!string.IsNullOrEmpty(profile.HeadwearShortname))
+            {
+                ulong skinId = profile.HeadwearSkinId >= 0 ? (ulong)profile.HeadwearSkinId : (ulong)(-profile.HeadwearSkinId);
+                Item headwear = ItemManager.CreateByName(profile.HeadwearShortname, 1, skinId);
+                if (headwear != null)
+                {
+                    headwear.condition = headwear.maxCondition;
+                    headwear.MoveToContainer(npc.inventory.containerWear);
+                }
+            }
+            
+            // Add shirt (hoodie, jumpsuit, etc.)
+            if (!string.IsNullOrEmpty(profile.ShirtShortname))
+            {
+                ulong skinId = profile.ShirtSkinId >= 0 ? (ulong)profile.ShirtSkinId : (ulong)(-profile.ShirtSkinId);
+                Item shirt = ItemManager.CreateByName(profile.ShirtShortname, 1, skinId);
+                if (shirt != null)
+                {
+                    shirt.condition = shirt.maxCondition;
+                    shirt.MoveToContainer(npc.inventory.containerWear);
+                }
+            }
+            
+            // Add pants
+            if (!string.IsNullOrEmpty(profile.PantsShortname))
+            {
+                ulong skinId = profile.PantsSkinId >= 0 ? (ulong)profile.PantsSkinId : (ulong)(-profile.PantsSkinId);
+                Item pants = ItemManager.CreateByName(profile.PantsShortname, 1, skinId);
+                if (pants != null)
+                {
+                    pants.condition = pants.maxCondition;
+                    pants.MoveToContainer(npc.inventory.containerWear);
                 }
             }
 
@@ -771,107 +1197,293 @@ namespace Oxide.Plugins
 
             _activeZombies.Clear();
             _currentWaveZombies.Clear();
+            _hellhoundsOnFire.Clear();
+            _zombieStates.Clear();
             _currentWaveSpawned = 0;
             _currentWaveTotalToSpawn = 0;
             return count;
         }
 
-        private void HopTick()
+        /// <summary>
+        /// Main Zombie AI tick - handles zombie targeting and movement
+        /// - Continuous NavAgent walking toward players
+        /// - 360° vision with far range - zombies always find players
+        /// - Natural bone club melee attacks (handled by NPC AI)
+        /// </summary>
+        private void ZombieAITick()
         {
             if (_activeZombies.Count == 0)
                 return;
 
             float now = Time.realtimeSinceStartup;
+            var toRemove = new List<BaseEntity>();
 
-            const float hopCooldown = 4f;
-            const float maxLungeDistance = 8f;
-            const float hopHeight = 0.6f;
-            const float playerSearchRange = 30f;
-            const float minFlatDistance = 4f;
-
-            var snapshot = new List<BaseEntity>(_activeZombies);
-            foreach (var be in snapshot)
+            foreach (var be in _activeZombies)
             {
                 if (be == null || be.IsDestroyed)
+                {
+                    toRemove.Add(be);
+                    continue;
+                }
+
+                // Skip hellhounds - they have their own tick
+                if (_hellhoundsOnFire.Contains(be))
                     continue;
 
                 var npc = be as NPCPlayer;
                 if (npc == null)
                     continue;
 
+                uint uid = npc.net != null ? (uint)(npc.net.ID.Value & 0xFFFFFFFF) : 0u;
+                
+                // Get or create behavior state for this zombie
+                if (!_zombieStates.TryGetValue(uid, out var state))
+                {
+                    float baseSpeed = npc.NavAgent != null ? npc.NavAgent.speed : 3.5f;
+                    state = new ZombieBehaviorState
+                    {
+                        BaseSpeed = baseSpeed,
+                        CurrentSpeed = baseSpeed,
+                        IsLunging = false,
+                        LungeEndTime = 0f,
+                        NextAttackTime = 0f,
+                        LastTargetUpdateTime = 0f,
+                        LastKnownTargetPos = Vector3.zero,
+                        TargetPlayerId = 0
+                    };
+                    _zombieStates[uid] = state;
+                }
+
                 Vector3 npcPos = npc.transform.position;
 
-                if (!string.IsNullOrEmpty(BurnEffectPrefab))
+                // Find nearest player - 360° vision with VERY far range (whole map)
+                BasePlayer target = FindNearestPlayer(npcPos, 1000f);
+                if (target == null)
+                    continue;
+
+                float distToTarget = Vector3.Distance(target.transform.position, npcPos);
+                Vector3 targetPos = target.transform.position;
+                
+                // Store target info
+                state.LastKnownTargetPos = targetPos;
+                state.TargetPlayerId = target.userID;
+
+                // === MOVEMENT LOGIC - Walking only ===
+                if (npc.NavAgent != null)
                 {
-                    Effect.server.Run(BurnEffectPrefab, npcPos + Vector3.up * 0.1f, Vector3.up, null);
+                    // Walking speed - no sprinting
+                    npc.NavAgent.speed = state.BaseSpeed;
+                    npc.NavAgent.acceleration = state.BaseSpeed * 2f;  // Moderate acceleration
+                    npc.NavAgent.angularSpeed = 360f;  // 360° turning for full vision
+                    
+                    if (npc.NavAgent.isOnNavMesh)
+                    {
+                        // Update destination toward player
+                        float timeSinceUpdate = now - state.LastTargetUpdateTime;
+                        
+                        if (timeSinceUpdate > 0.5f)
+                        {
+                            npc.NavAgent.SetDestination(targetPos);
+                            npc.NavAgent.isStopped = false;
+                            state.LastTargetUpdateTime = now;
+                            state.LastKnownTargetPos = targetPos;
+                        }
+                    }
+                    else
+                    {
+                        // Try to warp to navmesh if not on it
+                        UnityEngine.AI.NavMeshHit hit;
+                        if (UnityEngine.AI.NavMesh.SamplePosition(npcPos, out hit, 10f, -1))
+                        {
+                            npc.NavAgent.Warp(hit.position);
+                            if (npc.NavAgent.isOnNavMesh)
+                            {
+                                npc.NavAgent.SetDestination(targetPos);
+                                npc.NavAgent.isStopped = false;
+                            }
+                        }
+                    }
                 }
 
-                if (!string.IsNullOrEmpty(FliesLoopEffect))
+                // Set last attacker to trigger NPC's natural aggression/melee AI
+                npc.lastAttacker = target;
+                npc.lastDealtDamageTime = Time.time;
+            }
+
+            // Cleanup dead zombies
+            foreach (var entity in toRemove)
+            {
+                _activeZombies.Remove(entity);
+                if (entity != null)
                 {
-                    Effect.server.Run(FliesLoopEffect, npcPos + Vector3.up * 1.2f, Vector3.up, null);
+                    uint uid = entity.net != null ? (uint)(entity.net.ID.Value & 0xFFFFFFFF) : 0u;
+                    _zombieStates.Remove(uid);
                 }
-
-                BasePlayer target = null;
-                float bestDist = float.MaxValue;
-
+            }
+        }
+        
+        private void HellhoundTick()
+        {
+            if (_hellhoundsOnFire.Count == 0)
+                return;
+            
+            var toRemove = new List<BaseEntity>();
+            
+            foreach (var entity in _hellhoundsOnFire)
+            {
+                if (entity == null || entity.IsDestroyed)
+                {
+                    toRemove.Add(entity);
+                    continue;
+                }
+                
+                // Apply blood splatter at multiple heights for full red coverage
+                if (!string.IsNullOrEmpty(BloodSplatterDecal))
+                {
+                    Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.1f, Vector3.up, null);
+                    Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.4f, Vector3.up, null);
+                    Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.7f, Vector3.up, null);
+                    Effect.server.Run(BloodSplatterDecal, entity.transform.position + Vector3.up * 0.9f, Vector3.up, null);
+                }
+                
+                // Keep wolf aggressive toward nearest player - search entire map
+                var wolf = entity as BaseNpc;
+                if (wolf != null)
+                {
+                    // NEVER let wolf run away or lose aggression
+                    wolf.SetFact(BaseNpc.Facts.IsAggro, 1);
+                    wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
+                    wolf.SetFact(BaseNpc.Facts.IsAfraid, 0);
+                    
+                    // Keep maximum aggression stats
+                    wolf.Stats.VisionRange = 200f;
+                    wolf.Stats.AggressionRange = 200f;
+                    wolf.Stats.DeaggroRange = 500f;
+                    
+                    // Find ANY player on the map
+                    var nearestPlayer = FindNearestPlayer(wolf.transform.position, 500f);
+                    if (nearestPlayer != null)
+                    {
+                        wolf.AttackTarget = nearestPlayer;
+                        wolf.SetFact(BaseNpc.Facts.HasEnemy, 1);
+                        
+                        // Force wolf to chase player by setting destination
+                        if (wolf.NavAgent != null)
+                        {
+                            if (wolf.NavAgent.isOnNavMesh)
+                            {
+                                wolf.NavAgent.SetDestination(nearestPlayer.transform.position);
+                            }
+                            else
+                            {
+                                // Try to warp to navmesh if not on it (custom maps issue)
+                                UnityEngine.AI.NavMeshHit hit;
+                                if (UnityEngine.AI.NavMesh.SamplePosition(wolf.transform.position, out hit, 10f, -1))
+                                {
+                                    wolf.NavAgent.Warp(hit.position);
+                                    // Only set destination if warp succeeded
+                                    if (wolf.NavAgent.isOnNavMesh)
+                                    {
+                                        wolf.NavAgent.SetDestination(nearestPlayer.transform.position);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            foreach (var entity in toRemove)
+            {
+                _hellhoundsOnFire.Remove(entity);
+            }
+        }
+        
+        // Check brutes for proximity to players - explode if too close
+        private void BruteTick()
+        {
+            if (_explosiveBrutes.Count == 0)
+                return;
+            
+            var toRemove = new List<BaseEntity>();
+            var toExplode = new List<BaseEntity>();
+            
+            foreach (var entity in _explosiveBrutes)
+            {
+                if (entity == null || entity.IsDestroyed)
+                {
+                    toRemove.Add(entity);
+                    continue;
+                }
+                
+                Vector3 brutePos = entity.transform.position;
+                
+                // Check if any player is within explosion proximity
                 foreach (var player in BasePlayer.activePlayerList)
                 {
                     if (player == null || player.IsDead() || player.IsSleeping())
                         continue;
-
-                    float dist = Vector3.Distance(player.transform.position, npcPos);
-                    if (dist < bestDist && dist <= playerSearchRange)
+                    
+                    float dist = Vector3.Distance(player.transform.position, brutePos);
+                    if (dist <= 2.5f)  // Explosion proximity
                     {
-                        bestDist = dist;
-                        target = player;
+                        toExplode.Add(entity);
+                        break;
                     }
                 }
-
-                if (target == null)
+            }
+            
+            // Remove dead/destroyed brutes
+            foreach (var entity in toRemove)
+            {
+                _explosiveBrutes.Remove(entity);
+            }
+            
+            // Explode brutes that got close to players
+            foreach (var entity in toExplode)
+            {
+                if (entity == null || entity.IsDestroyed)
                     continue;
-
-                if (bestDist < minFlatDistance)
+                    
+                Vector3 explosionPos = entity.transform.position + Vector3.up * 1.5f;  // Head height
+                
+                // Remove from tracking first to prevent duplicate explosions
+                _explosiveBrutes.Remove(entity);
+                
+                // BOOM! Spawn beancan grenade at brute's head position
+                BaseEntity grenade = GameManager.server.CreateEntity(BeancanPrefab, explosionPos, Quaternion.identity, true);
+                if (grenade != null)
                 {
-                    if (!string.IsNullOrEmpty(EatCeleryEffect) && UnityEngine.Random.Range(0f, 1f) < 0.2f)
+                    grenade.Spawn();
+                    
+                    // Make it explode immediately
+                    var timedExplosive = grenade as TimedExplosive;
+                    if (timedExplosive != null)
                     {
-                        Effect.server.Run(EatCeleryEffect, npcPos + Vector3.up * 1.4f, Vector3.up, null);
+                        timedExplosive.SetFuse(0.05f);  // Explode even faster
                     }
-
-                    if (!string.IsNullOrEmpty(DrinkVomitEffect) && UnityEngine.Random.Range(0f, 1f) < 0.05f)
+                    else
                     {
-                        Effect.server.Run(DrinkVomitEffect, npcPos + Vector3.up * 1.4f, Vector3.up, null);
+                        // Fallback: manually trigger explosion effect
+                        Effect.server.Run(ExplosionEffect, explosionPos);
+                        
+                        // Damage nearby players directly
+                        foreach (var player in BasePlayer.activePlayerList)
+                        {
+                            if (player == null || player.IsDead())
+                                continue;
+                            float dist = Vector3.Distance(player.transform.position, explosionPos);
+                            if (dist <= 5f)
+                            {
+                                float damage = (5f - dist) * 30f;  // Closer = more damage
+                                player.Hurt(damage, Rust.DamageType.Explosion, entity);
+                            }
+                        }
                     }
-
-                    continue;
                 }
-
-                uint uid = npc.net != null ? (uint)(npc.net.ID.Value & 0xFFFFFFFF) : 0u;
-                int bucket = (int)(now + uid) % (int)hopCooldown;
-                if (bucket != 0)
-                    continue;
-
-                Vector3 to = target.transform.position;
-                Vector3 dir = (to - npcPos);
-                dir.y = 0f;
-                float distFlat = dir.magnitude;
-                if (distFlat < 0.1f)
-                    continue;
-
-                dir /= distFlat;
-
-                float lungeDist = Mathf.Min(maxLungeDistance, distFlat * 0.75f);
-                Vector3 candidate = npcPos + dir * lungeDist + Vector3.up * hopHeight;
-
-                RaycastHit hit;
-                if (Physics.Raycast(candidate + Vector3.up * 2f, Vector3.down, out hit, 10f,
-                    Layers.Mask.World | Layers.Mask.Terrain))
-                {
-                    candidate = hit.point + Vector3.up * 0.1f;
-                }
-
-                npc.MovePosition(candidate);
-                npc.TransformChanged();
-                npc.SendNetworkUpdateImmediate();
+                
+                // Kill the brute
+                entity.Kill();
             }
         }
 
@@ -899,18 +1511,54 @@ namespace Oxide.Plugins
             _waveProfileName = profileName;
             _waveSpawnSetName = string.IsNullOrEmpty(spawnSetName) ? null : spawnSetName.ToLower();
 
-            if (_waveSpawnSetName != null)
+            Puts($"[NecroZombies] Starting wave mode - profile: '{profileName}', spawnSet: '{spawnSetName ?? "null"}' -> '{_waveSpawnSetName ?? "null"}'");
+            
+            // Debug: list all available spawn sets
+            if (_config.SpawnSets != null && _config.SpawnSets.Count > 0)
             {
-                if (_config.SpawnSets == null || !_config.SpawnSets.ContainsKey(_waveSpawnSetName) ||
-                    _config.SpawnSets[_waveSpawnSetName].Count == 0)
+                Puts($"[NecroZombies] Available spawn sets: {string.Join(", ", _config.SpawnSets.Keys)}");
+                
+                // Zombies ONLY spawn at /zspawnadd points - find a valid set
+                bool foundValidSet = false;
+                
+                // First try the specified spawn set
+                if (_waveSpawnSetName != null && _config.SpawnSets.ContainsKey(_waveSpawnSetName) && 
+                    _config.SpawnSets[_waveSpawnSetName].Count > 0)
                 {
-                    PrintWarning($"[NecroZombies] Spawn set '{_waveSpawnSetName}' not found or empty, falling back to single center.");
-                    _waveSpawnSetName = null;
+                    foundValidSet = true;
+                    Puts($"[NecroZombies] Using specified spawn set '{_waveSpawnSetName}' with {_config.SpawnSets[_waveSpawnSetName].Count} point(s).");
+                    foreach (var p in _config.SpawnSets[_waveSpawnSetName])
+                    {
+                        Puts($"[NecroZombies]   Point: ({p.x:F1}, {p.y:F1}, {p.z:F1})");
+                    }
                 }
                 else
                 {
-                    Puts($"[NecroZombies] Using spawn set '{_waveSpawnSetName}' with {_config.SpawnSets[_waveSpawnSetName].Count} point(s).");
+                    // Try to find any valid spawn set
+                    foreach (var kvp in _config.SpawnSets)
+                    {
+                        if (kvp.Value != null && kvp.Value.Count > 0)
+                        {
+                            _waveSpawnSetName = kvp.Key;
+                            foundValidSet = true;
+                            Puts($"[NecroZombies] Using first available spawn set '{_waveSpawnSetName}' with {kvp.Value.Count} point(s).");
+                            foreach (var p in kvp.Value)
+                            {
+                                Puts($"[NecroZombies]   Point: ({p.x:F1}, {p.y:F1}, {p.z:F1})");
+                            }
+                            break;
+                        }
+                    }
                 }
+                
+                if (!foundValidSet)
+                {
+                    PrintWarning("[NecroZombies] No valid spawn sets found! Use /zspawnadd <setname> to add spawn points. Zombies will not spawn.");
+                }
+            }
+            else
+            {
+                PrintWarning("[NecroZombies] No spawn sets configured! Use /zspawnadd <setname> to add spawn points. Zombies will not spawn.");
             }
 
             _currentWaveZombies.Clear();
@@ -921,6 +1569,10 @@ namespace Oxide.Plugins
             _waveSpawnTimer = null;
             _waveCheckTimer?.Destroy();
             _waveCheckTimer = null;
+            
+            // Start persistent wave HUD updates
+            _waveHudTimer?.Destroy();
+            _waveHudTimer = timer.Every(1f, UpdateWaveHud);
 
             StartNextWave();
             return true;
@@ -935,12 +1587,16 @@ namespace Oxide.Plugins
 
             _waveCheckTimer?.Destroy();
             _waveCheckTimer = null;
+            
+            _waveHudTimer?.Destroy();
+            _waveHudTimer = null;
 
             _currentWaveZombies.Clear();
             _currentWaveSpawned = 0;
             _currentWaveTotalToSpawn = 0;
 
             DestroyWaveBannerForAll();
+            DestroyWaveHudForAll();
         }
 
         private void StartNextWave()
@@ -967,8 +1623,9 @@ namespace Oxide.Plugins
             _currentWaveTotalToSpawn = Mathf.Max(1, baseCount + (_currentWave - 1) * countIncrease);
             _currentWaveInitialCount = _currentWaveTotalToSpawn;
 
-            float interval = waves.SpawnIntervalSeconds * Mathf.Pow(waves.SpawnIntervalPerWaveMultiplier, _currentWave - 1);
-            _currentWaveSpawnInterval = Mathf.Max(waves.SpawnIntervalMinSeconds, interval);
+            // Get dynamic spawn interval based on wave
+            var (_, dynamicInterval) = GetWaveSpawnSettings();
+            _currentWaveSpawnInterval = dynamicInterval;
 
             _currentWaveStartTime = Time.realtimeSinceStartup;
 
@@ -978,7 +1635,7 @@ namespace Oxide.Plugins
             else
                 ShowWaveBanner(_currentWave, _waveProfileName);
 
-            Puts($"[NecroZombies] Wave {_currentWave} starting. Hellhounds: {hellWave}. Will spawn ~{_currentWaveTotalToSpawn} total.");
+            Puts($"[NecroZombies] Wave {_currentWave} starting. Hellhounds: {hellWave}. Will spawn ~{_currentWaveTotalToSpawn} total. Interval: {_currentWaveSpawnInterval}s");
 
             _waveSpawnTimer?.Destroy();
             _waveSpawnTimer = timer.Every(_currentWaveSpawnInterval, DripSpawnWave);
@@ -987,21 +1644,90 @@ namespace Oxide.Plugins
             _waveCheckTimer = timer.Every(1f, CheckWaveProgress);
         }
 
+        // Track which spawn point to use next (round-robin)
+        private int _spawnPointIndex = 0;
+        
+        /// <summary>
+        /// Returns a spawn position ONLY from UNLOCKED zones.
+        /// Returns Vector3.zero if no valid/unlocked spawn points exist.
+        /// Zombies ONLY spawn at /zspawnadd points from zones without doors or with opened doors.
+        /// </summary>
         private Vector3 GetRandomSpawnPosition()
         {
-            if (_waveSpawnSetName != null &&
-                _config.SpawnSets != null &&
-                _config.SpawnSets.TryGetValue(_waveSpawnSetName, out var list) &&
-                list != null &&
-                list.Count > 0)
+            // Get spawn points ONLY from unlocked zones (no door or door is open)
+            List<Vector3> spawnPoints = GetUnlockedSpawnPoints();
+            
+            // If we found valid UNLOCKED spawn points, use them
+            if (spawnPoints != null && spawnPoints.Count > 0)
             {
-                var point = list[UnityEngine.Random.Range(0, list.Count)];
+                // Round-robin through spawn points instead of random
+                // This ensures all spawn points are used evenly
+                _spawnPointIndex = (_spawnPointIndex + 1) % spawnPoints.Count;
+                var point = spawnPoints[_spawnPointIndex];
+                
+                // Small random offset around the spawn point (1-2m spread)
                 Vector2 circle = UnityEngine.Random.insideUnitCircle * UnityEngine.Random.Range(0.5f, 2f);
                 return point + new Vector3(circle.x, 0f, circle.y);
             }
-
-            Vector2 fallbackCircle = UnityEngine.Random.insideUnitCircle * UnityEngine.Random.Range(3f, 6f);
-            return _fallbackCenter + new Vector3(fallbackCircle.x, 0f, fallbackCircle.y);
+            
+            // NO fallback - zombies ONLY spawn at configured AND unlocked spawn points
+            // Return Vector3.zero to signal no valid spawn position
+            return Vector3.zero;
+        }
+        
+        /// <summary>
+        /// Calculate dynamic spawn settings based on current wave
+        /// Early waves: spawn 1-2 at a time, slow interval
+        /// Later waves: spawn 2-4 at a time, faster interval
+        /// </summary>
+        private (int groupSize, float interval) GetWaveSpawnSettings()
+        {
+            int wave = _currentWave;
+            
+            // Group size: waves 1-3 = 1-2, waves 4-6 = 2, waves 7+ = 2-4
+            int groupSize;
+            if (wave <= 3)
+                groupSize = UnityEngine.Random.Range(1, 3); // 1-2
+            else if (wave <= 6)
+                groupSize = 2;
+            else if (wave <= 10)
+                groupSize = UnityEngine.Random.Range(2, 4); // 2-3
+            else
+                groupSize = UnityEngine.Random.Range(2, 5); // 2-4
+            
+            // Spawn interval: starts at 5s, decreases each wave, minimum 1.5s
+            float baseInterval = 5.0f;
+            float intervalReduction = 0.3f * (wave - 1);
+            float interval = Mathf.Max(1.5f, baseInterval - intervalReduction);
+            
+            return (groupSize, interval);
+        }
+        
+        /// <summary>
+        /// Get zombie variant for current wave (brutes only after wave 4)
+        /// </summary>
+        private string GetZombieVariantForWave()
+        {
+            float roll = UnityEngine.Random.Range(0f, 1f);
+            
+            if (_currentWave < 4)
+            {
+                // Waves 1-3: Only default (70%) and runner (30%), NO brutes
+                if (roll < 0.70f)
+                    return "default";
+                else
+                    return "runner";
+            }
+            else
+            {
+                // Wave 4+: default (60%), runner (25%), brute (15%)
+                if (roll < 0.60f)
+                    return "default";
+                else if (roll < 0.85f)
+                    return "runner";
+                else
+                    return "brute";
+            }
         }
 
         private void DripSpawnWave()
@@ -1026,8 +1752,9 @@ namespace Oxide.Plugins
                 return;
 
             bool hellWave = IsHellhoundWave(_currentWave);
-
-            int groupSize = waves.GroupSize;
+            
+            // Get dynamic spawn settings based on current wave
+            var (groupSize, spawnInterval) = GetWaveSpawnSettings();
             int spawnedThisTick = 0;
 
             for (int i = 0; i < groupSize; i++)
@@ -1039,6 +1766,15 @@ namespace Oxide.Plugins
                     break;
 
                 Vector3 spawnPos = GetRandomSpawnPosition();
+                
+                // Check if we got a valid spawn position from /zspawnadd points
+                if (spawnPos == Vector3.zero)
+                {
+                    PrintWarning("[NecroZombies] No valid spawn points configured! Use /zspawnadd <setname> to add spawn points. Stopping wave.");
+                    _waveSpawnTimer?.Destroy();
+                    _waveSpawnTimer = null;
+                    return;
+                }
 
                 bool spawnedOk;
 
@@ -1067,19 +1803,32 @@ namespace Oxide.Plugins
                     }
                     else
                     {
-                        // normal zombies as mix
-                        var baseProfile = GetProfile(_waveProfileName);
+                        // Use wave-appropriate variant (no brutes before wave 4)
+                        string variantName = GetZombieVariantForWave();
+                        
+                        var baseProfile = GetProfile(variantName);
+                        float healthMultiplier = 1f + _config.Waves.HealthMultiplierPerWave * (_currentWave - 1);
+                        
                         var waveProfile = new ZombieProfile
                         {
                             ProfileName = baseProfile.ProfileName,
+                            PrefabType = baseProfile.PrefabType,
                             MeleeShortname = baseProfile.MeleeShortname,
                             MeleeSkinId = baseProfile.MeleeSkinId,
                             ClothingShortname = baseProfile.ClothingShortname,
                             ClothingSkinId = baseProfile.ClothingSkinId,
-                            DisplayName = $"{baseProfile.DisplayName} [Wave {_currentWave}]",
-                            Health = baseProfile.Health * (1f + _config.Waves.HealthMultiplierPerWave * (_currentWave - 1)),
+                            HeadwearShortname = baseProfile.HeadwearShortname,
+                            HeadwearSkinId = baseProfile.HeadwearSkinId,
+                            ShirtShortname = baseProfile.ShirtShortname,
+                            ShirtSkinId = baseProfile.ShirtSkinId,
+                            PantsShortname = baseProfile.PantsShortname,
+                            PantsSkinId = baseProfile.PantsSkinId,
+                            DisplayName = baseProfile.DisplayName,
+                            Health = baseProfile.Health * healthMultiplier,
                             Speed = baseProfile.Speed * (1f + _config.Waves.SpeedMultiplierPerWave * (_currentWave - 1)),
-                            AlwaysOnFire = baseProfile.AlwaysOnFire
+                            AlwaysOnFire = baseProfile.AlwaysOnFire,
+                            ExplodeOnProximity = baseProfile.ExplodeOnProximity,
+                            ExplosionProximity = baseProfile.ExplosionProximity
                         };
 
                         spawnedOk = SpawnNecroZombie(spawnPos, waveProfile, trackForWave: true);
@@ -1087,18 +1836,32 @@ namespace Oxide.Plugins
                 }
                 else
                 {
-                    var baseProfile = GetProfile(_waveProfileName);
+                    // Use wave-appropriate variant (no brutes before wave 4)
+                    string variantName = GetZombieVariantForWave();
+                    
+                    var baseProfile = GetProfile(variantName);
+                    float healthMultiplier = 1f + _config.Waves.HealthMultiplierPerWave * (_currentWave - 1);
+                    
                     var waveProfile = new ZombieProfile
                     {
                         ProfileName = baseProfile.ProfileName,
+                        PrefabType = baseProfile.PrefabType,
                         MeleeShortname = baseProfile.MeleeShortname,
                         MeleeSkinId = baseProfile.MeleeSkinId,
                         ClothingShortname = baseProfile.ClothingShortname,
                         ClothingSkinId = baseProfile.ClothingSkinId,
-                        DisplayName = $"{baseProfile.DisplayName} [Wave {_currentWave}]",
-                        Health = baseProfile.Health * (1f + _config.Waves.HealthMultiplierPerWave * (_currentWave - 1)),
+                        HeadwearShortname = baseProfile.HeadwearShortname,
+                        HeadwearSkinId = baseProfile.HeadwearSkinId,
+                        ShirtShortname = baseProfile.ShirtShortname,
+                        ShirtSkinId = baseProfile.ShirtSkinId,
+                        PantsShortname = baseProfile.PantsShortname,
+                        PantsSkinId = baseProfile.PantsSkinId,
+                        DisplayName = baseProfile.DisplayName,
+                        Health = baseProfile.Health * healthMultiplier,
                         Speed = baseProfile.Speed * (1f + _config.Waves.SpeedMultiplierPerWave * (_currentWave - 1)),
-                        AlwaysOnFire = baseProfile.AlwaysOnFire
+                        AlwaysOnFire = baseProfile.AlwaysOnFire,
+                        ExplodeOnProximity = baseProfile.ExplodeOnProximity,
+                        ExplosionProximity = baseProfile.ExplosionProximity
                     };
 
                     spawnedOk = SpawnNecroZombie(spawnPos, waveProfile, trackForWave: true);
@@ -1137,7 +1900,12 @@ namespace Oxide.Plugins
 
             var waves = _config.Waves;
 
-            if (_currentWaveInitialCount <= 0)
+            // Don't check progress until all zombies for this wave have spawned
+            if (_currentWaveTotalToSpawn > 0)
+                return;
+            
+            // Use the actual spawned count, not the initial target
+            if (_currentWaveSpawned <= 0)
                 return;
 
             int aliveInWave = 0;
@@ -1147,30 +1915,50 @@ namespace Oxide.Plugins
                     aliveInWave++;
             }
 
-            int deadInWave = _currentWaveInitialCount - aliveInWave;
-            float killRatio = (float)deadInWave / _currentWaveInitialCount;
-
-            if (killRatio >= waves.RequiredKillRatioToAdvance)
+            // Black Ops style: ALL zombies must be dead to advance
+            // When RequiredKillRatioToAdvance is 1.0, we check if aliveInWave == 0
+            bool waveCleared = false;
+            if (waves.RequiredKillRatioToAdvance >= 1.0f)
             {
-                Puts($"[NecroZombies] Wave {_currentWave} kill ratio reached ({killRatio:P0}). Next wave in {waves.WaveStartDelay:F1}s.");
+                // Must kill every single zombie
+                waveCleared = (aliveInWave == 0);
+            }
+            else
+            {
+                // Legacy ratio-based check
+                int deadInWave = _currentWaveSpawned - aliveInWave;
+                float killRatio = (float)deadInWave / _currentWaveSpawned;
+                waveCleared = (killRatio >= waves.RequiredKillRatioToAdvance);
+            }
+
+            if (waveCleared)
+            {
+                Puts($"[NecroZombies] Wave {_currentWave} cleared! All zombies eliminated. Next wave in {waves.WaveStartDelay:F1}s.");
                 _waveCheckTimer?.Destroy();
                 _waveCheckTimer = null;
 
+                // Notify other plugins that wave is complete (for respawning spectators)
+                Interface.Oxide.CallHook("OnNecroZombiesWaveComplete", _currentWave);
+
                 // Intermission banner between waves
-                ShowStageBanner("INTERMISSION", $"Wave {_currentWave} cleared", waves.WaveStartDelay);
+                ShowStageBanner("WAVE COMPLETE", $"Prepare for Wave {_currentWave + 1}", waves.WaveStartDelay);
                 timer.Once(waves.WaveStartDelay, StartNextWave);
                 return;
             }
 
-            float elapsed = Time.realtimeSinceStartup - _currentWaveStartTime;
-            if (elapsed >= waves.WaveTimeoutSeconds && waves.WaveTimeoutSeconds > 0f)
+            // Only apply timeout if configured (0 = no timeout, Black Ops style)
+            if (waves.WaveTimeoutSeconds > 0f)
             {
-                Puts($"[NecroZombies] Wave {_currentWave} timed out after {elapsed:F1}s. Forcing next wave in {waves.WaveStartDelay:F1}s.");
-                _waveCheckTimer?.Destroy();
-                _waveCheckTimer = null;
+                float elapsed = Time.realtimeSinceStartup - _currentWaveStartTime;
+                if (elapsed >= waves.WaveTimeoutSeconds)
+                {
+                    Puts($"[NecroZombies] Wave {_currentWave} timed out after {elapsed:F1}s. Forcing next wave in {waves.WaveStartDelay:F1}s.");
+                    _waveCheckTimer?.Destroy();
+                    _waveCheckTimer = null;
 
-                ShowStageBanner("INTERMISSION", "Time's up", waves.WaveStartDelay);
-                timer.Once(waves.WaveStartDelay, StartNextWave);
+                    ShowStageBanner("INTERMISSION", "Time's up", waves.WaveStartDelay);
+                    timer.Once(waves.WaveStartDelay, StartNextWave);
+                }
             }
         }
 
@@ -1253,140 +2041,183 @@ namespace Oxide.Plugins
                 DestroyWaveBanner(player);
             }
         }
+        
+        // Persistent Wave HUD showing current wave and zombies remaining
+        private void UpdateWaveHud()
+        {
+            if (!_waveModeActive)
+            {
+                DestroyWaveHudForAll();
+                return;
+            }
+            
+            int aliveZombies = 0;
+            foreach (var be in _currentWaveZombies)
+            {
+                if (be != null && !be.IsDestroyed)
+                    aliveZombies++;
+            }
+            
+            bool isHellhoundWave = IsHellhoundWave(_currentWave);
+            string waveType = isHellhoundWave ? "HELLHOUND WAVE" : "WAVE";
+            
+            // Black Ops style HUD - show zombies remaining
+            string statusText;
+            if (_currentWaveTotalToSpawn > 0)
+            {
+                // Still spawning zombies
+                statusText = $"Incoming: {_currentWaveTotalToSpawn}";
+            }
+            else
+            {
+                // All spawned, show remaining
+                statusText = $"Remaining: {aliveZombies}";
+            }
+            
+            string hudText = $"<color=#ff4444>{waveType} {_currentWave}</color>\\n<color=#ffffff>{statusText}</color>";
+            
+            string json = BuildWaveHudJson(hudText);
+            
+            foreach (var player in BasePlayer.activePlayerList)
+            {
+                if (player == null || !player.IsConnected)
+                    continue;
+                
+                DestroyWaveHud(player);
+                CommunityEntity.ServerInstance.ClientRPCEx(
+                    new Network.SendInfo { connection = player.net.connection },
+                    null,
+                    "AddUI",
+                    json
+                );
+            }
+        }
+        
+        private void DestroyWaveHud(BasePlayer player)
+        {
+            if (player == null || !player.IsConnected)
+                return;
+            
+            CommunityEntity.ServerInstance.ClientRPCEx(
+                new Network.SendInfo { connection = player.net.connection },
+                null,
+                "DestroyUI",
+                WaveHudPanel
+            );
+        }
+        
+        private void DestroyWaveHudForAll()
+        {
+            foreach (var player in BasePlayer.activePlayerList)
+            {
+                DestroyWaveHud(player);
+            }
+        }
+        
+        private string BuildWaveHudJson(string text)
+        {
+            // Raw JSON format for Oxide CUI - more reliable than serializing objects
+            return $@"[
+                {{
+                    ""name"": ""{WaveHudPanel}"",
+                    ""parent"": ""Overlay"",
+                    ""components"": [
+                        {{
+                            ""type"": ""UnityEngine.UI.Image"",
+                            ""color"": ""0 0 0 0.8""
+                        }},
+                        {{
+                            ""type"": ""RectTransform"",
+                            ""anchormin"": ""0.85 0.92"",
+                            ""anchormax"": ""0.99 0.99""
+                        }}
+                    ]
+                }},
+                {{
+                    ""name"": ""{WaveHudText}"",
+                    ""parent"": ""{WaveHudPanel}"",
+                    ""components"": [
+                        {{
+                            ""type"": ""UnityEngine.UI.Text"",
+                            ""text"": ""{text.Replace("\"", "\\\"")}"",
+                            ""fontSize"": 14,
+                            ""align"": ""MiddleCenter"",
+                            ""color"": ""1 1 1 1""
+                        }},
+                        {{
+                            ""type"": ""RectTransform"",
+                            ""anchormin"": ""0.05 0.05"",
+                            ""anchormax"": ""0.95 0.95""
+                        }}
+                    ]
+                }}
+            ]";
+        }
 
         private string BuildWaveBannerJson(string title, string subtitle)
         {
             var waves = _config.Waves;
-
-            var container = new CuiElementContainer();
-
-            // Root panel
-            var panel = new CuiElement
-            {
-                Name = WaveBannerPanel,
-                Parent = "Hud",
-                Components =
-                {
-                    new CuiImageComponent
-                    {
-                        Color = "0 0 0 0.55"
-                    },
-                    new CuiRectTransformComponent
-                    {
-                        AnchorMin = "0.2 0.9",
-                        AnchorMax = "0.8 0.98"
-                    }
-                }
-            };
-            container.elements.Add(panel);
-
-            // Title
-            var titleElement = new CuiElement
-            {
-                Name = WaveBannerTitle,
-                Parent = WaveBannerPanel,
-                Components =
-                {
-                    new CuiTextComponent
-                    {
-                        Text = title,
-                        FontSize = waves.BannerTitleSize,
-                        Align = (int)TextAnchor.MiddleCenter,
-                        Color = waves.BannerTitleColor
-                    },
-                    new CuiRectTransformComponent
-                    {
-                        AnchorMin = "0 0.3",
-                        AnchorMax = "1 1"
-                    }
-                }
-            };
-            container.elements.Add(titleElement);
-
+            
+            string subtitleJson = "";
             if (!string.IsNullOrEmpty(subtitle))
             {
-                var subElement = new CuiElement
-                {
-                    Name = WaveBannerSubtitle,
-                    Parent = WaveBannerPanel,
-                    Components =
-                    {
-                        new CuiTextComponent
-                        {
-                            Text = subtitle,
-                            FontSize = waves.BannerSubSize,
-                            Align = (int)TextAnchor.MiddleCenter,
-                            Color = waves.BannerSubColor
-                        },
-                        new CuiRectTransformComponent
-                        {
-                            AnchorMin = "0 0",
-                            AnchorMax = "1 0.5"
-                        }
-                    }
-                };
-                container.elements.Add(subElement);
+                subtitleJson = $@",
+                {{
+                    ""name"": ""{WaveBannerSubtitle}"",
+                    ""parent"": ""{WaveBannerPanel}"",
+                    ""components"": [
+                        {{
+                            ""type"": ""UnityEngine.UI.Text"",
+                            ""text"": ""{subtitle.Replace("\"", "\\\"")}"",
+                            ""fontSize"": {waves.BannerSubSize},
+                            ""align"": ""MiddleCenter"",
+                            ""color"": ""{waves.BannerSubColor}""
+                        }},
+                        {{
+                            ""type"": ""RectTransform"",
+                            ""anchormin"": ""0 0"",
+                            ""anchormax"": ""1 0.5""
+                        }}
+                    ]
+                }}";
             }
-
-            return JsonConvert.SerializeObject(container);
-        }
-
-        // Minimal CUI support types
-        private class CuiElementContainer
-        {
-            [JsonProperty("elements")]
-            public List<CuiElement> elements = new List<CuiElement>();
-        }
-
-        private class CuiElement
-        {
-            [JsonProperty("name", NullValueHandling = NullValueHandling.Ignore)]
-            public string Name;
-
-            [JsonProperty("parent", NullValueHandling = NullValueHandling.Ignore)]
-            public string Parent;
-
-            [JsonProperty("components")]
-            public List<object> Components = new List<object>();
-        }
-
-        private class CuiRectTransformComponent
-        {
-            [JsonProperty("type")]
-            public string Type = "RectTransform";
-
-            [JsonProperty("anchormin")]
-            public string AnchorMin;
-
-            [JsonProperty("anchormax")]
-            public string AnchorMax;
-        }
-
-        private class CuiImageComponent
-        {
-            [JsonProperty("type")]
-            public string Type = "UnityEngine.UI.Image";
-
-            [JsonProperty("color")]
-            public string Color = "1 1 1 1";
-        }
-
-        private class CuiTextComponent
-        {
-            [JsonProperty("type")]
-            public string Type = "UnityEngine.UI.Text";
-
-            [JsonProperty("text")]
-            public string Text;
-
-            [JsonProperty("fontSize")]
-            public int FontSize;
-
-            [JsonProperty("align")]
-            public int Align;
-
-            [JsonProperty("color")]
-            public string Color = "1 1 1 1";
+            
+            // Raw JSON format for Oxide CUI
+            return $@"[
+                {{
+                    ""name"": ""{WaveBannerPanel}"",
+                    ""parent"": ""Overlay"",
+                    ""components"": [
+                        {{
+                            ""type"": ""UnityEngine.UI.Image"",
+                            ""color"": ""0 0 0 0.7""
+                        }},
+                        {{
+                            ""type"": ""RectTransform"",
+                            ""anchormin"": ""0.25 0.85"",
+                            ""anchormax"": ""0.75 0.95""
+                        }}
+                    ]
+                }},
+                {{
+                    ""name"": ""{WaveBannerTitle}"",
+                    ""parent"": ""{WaveBannerPanel}"",
+                    ""components"": [
+                        {{
+                            ""type"": ""UnityEngine.UI.Text"",
+                            ""text"": ""{title.Replace("\"", "\\\"")}"",
+                            ""fontSize"": {waves.BannerTitleSize},
+                            ""align"": ""MiddleCenter"",
+                            ""color"": ""{waves.BannerTitleColor}""
+                        }},
+                        {{
+                            ""type"": ""RectTransform"",
+                            ""anchormin"": ""0 0.4"",
+                            ""anchormax"": ""1 1""
+                        }}
+                    ]
+                }}{subtitleJson}
+            ]";
         }
 
         #endregion
