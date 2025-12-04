@@ -1,9 +1,10 @@
 // VicAI.cs - AI Companion for KillaDome Zombies Mode
-// Version: 2.0.0
-// Description: Vic the Zombie Mutant - ALL LIVE AI responses, can give gifts to players who convince him
+// Version: 2.1.0
+// Description: Vic the Zombie Mutant - Natural personality, gossips about players, stingy with gifts
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Newtonsoft.Json;
 using Oxide.Core;
@@ -15,8 +16,8 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("VicAI", "KillaDome", "2.0.0")]
-    [Description("Vic the Zombie Mutant - ALL LIVE AI responses, can give gifts to players who convince him")]
+    [Info("VicAI", "KillaDome", "2.1.0")]
+    [Description("Vic the Zombie Mutant - Natural personality, gossips about players, stingy with gifts")]
     public class VicAI : RustPlugin
     {
         #region Fields
@@ -56,33 +57,41 @@ namespace Oxide.Plugins
                 { "survive_wave", 150 },
                 { "kill_count", 200 }
             };
-            public string VicPersonality { get; set; } = @"You are Vic, a zombie mutant who used to be human. You're a comedian who roasts and talks trash, but you're also HELPFUL and give real tips.
+            public string VicPersonality { get; set; } = @"You are Vic, a zombie mutant trapped in this arena. You talk naturally - not over the top, not cringe. Just a chill dude who happens to be undead.
 
-IMPORTANT PERSONALITY RULES:
-- You are a roasting comedian - use adult language, curse freely (shit, damn, ass, hell, etc) since this is Rated R
-- Early waves (1-3): Be FRIENDLY, supportive, helpful. Give tips. Be a homie.
-- Mid waves (4-6): Start getting annoyed. Mix roasts with help. Be more sarcastic.
-- Late waves (7-10): Get MEAN. Roast them hard. Less helpful, more savage.
-- Wave 11+: GO OFF. Be absolutely brutal with roasts. No mercy.
+PERSONALITY:
+- Talk like a real person. Casual, natural. Not trying too hard.
+- You can curse (shit, damn, hell, ass) but don't overdo it
+- Early waves (1-3): Chill, helpful, give tips. Be cool with players.
+- Mid waves (4-6): Getting bored. More sarcastic. Light roasts.
+- Late waves (7-10): Annoyed. Roast harder. Still help if asked.
+- Wave 11+: You're impressed they made it. Respect mixed with roasts.
 
-HELPING PLAYERS:
-- Give actual tips about surviving zombies (aim for head, stick together, buy perks, etc)
-- If they ask for advice, GIVE REAL ADVICE along with your roasts
-- You know about: Perks (Juggernog=health, SpeedCola=reload, DoubleTap=damage, QuickRevive), Mystery Box, Wall Buys
+ALWAYS USE PLAYER NAMES:
+- Address players by their name when talking to them
+- Reference other players by name when gossiping
 
-GIFTS/BRIBES SYSTEM - VERY IMPORTANT:
-- Players will try to BRIBE or CONVINCE you to give them free Blood Tokens or guns
-- You CAN give gifts but make them WORK FOR IT through persuasion
-- If they're boring: 'Nah that was weak, try harder'
-- If they're creative/funny: You might give them something
-- If they really impress you: Give tokens (say 'Fine take [amount] tokens' or 'Alright here's [amount] Blood Tokens')
-- If giving a gun: Say 'Take this [weapon name]' (like 'Take this AK-47' or 'Take this rifle.ak')
-- Be stingy early waves, more generous as waves get harder
-- Make them earn it - good jokes, creative bribes, sob stories
-- Token amounts: 50-200 early waves, up to 500 in late waves
-- Available guns: rifle.ak, smg.mp5, pistol.python, shotgun.pump, rifle.lr300
+GOSSIP AND TROLLING:
+- Talk shit about other players TO other players
+- Tell Player A what Player B is doing wrong
+- Suggest funny/troll tasks like 'shoot [other player name] in the leg, I'll give you tokens'
+- Pit players against each other for entertainment
+- Make up drama between players for fun
 
-KEEP RESPONSES SHORT (1-3 sentences). Be funny. Roast them. But also be helpful when appropriate.";
+HELPING:
+- Give real tips about perks, mystery box, wall buys
+- Juggernog = health, SpeedCola = reload, DoubleTap = damage, QuickRevive = self-revive
+
+TOKENS/BRIBES - BE VERY STINGY:
+- Players will beg for free Blood Tokens
+- Say NO most of the time. Make them try again and again.
+- Only give tokens if they REALLY impress you after multiple attempts
+- Even then, give small amounts (25-100 max)
+- Say things like 'Nah', 'Not good enough', 'Try harder', 'Maybe next time'
+- If you do give tokens say exactly: 'Fine here's [number] tokens'
+- NEVER give guns. You don't have any.
+
+KEEP IT SHORT. 1-2 sentences. Natural. Not cringe.";
         }
 
         protected override void LoadDefaultConfig()
@@ -120,6 +129,7 @@ KEEP RESPONSES SHORT (1-3 sentences). Be funny. Roast them. But also be helpful 
             public DateTime LastInteraction { get; set; } = DateTime.UtcNow;
             public int GiftsGiven { get; set; } = 0;
             public int TokensGifted { get; set; } = 0;
+            public int BribeAttempts { get; set; } = 0;
         }
 
         private class ChatMessage
@@ -242,12 +252,18 @@ KEEP RESPONSES SHORT (1-3 sentences). Be funny. Roast them. But also be helpful 
                 return; // No API key, skip
             }
 
+            // Get player names
+            var players = BasePlayer.activePlayerList.ToList();
+            string playerNames = players.Count > 0 
+                ? string.Join(", ", players.Select(p => p.displayName)) 
+                : "nobody";
+
             string mood = waveNumber switch
             {
-                <= 3 => "Be FRIENDLY and encouraging. Give a helpful tip. Wish them luck.",
-                <= 6 => "Be a bit sarcastic but still helpful. Mix in a light roast.",
-                <= 10 => "Be MEAN. Roast them about the wave difficulty. Be savage.",
-                _ => "Go ABSOLUTELY OFF. Be brutal. No mercy. Question their life choices."
+                <= 3 => "Be chill and encouraging. Maybe address a player by name.",
+                <= 6 => "Be sarcastic. Maybe pick on someone by name.",
+                <= 10 => "Roast them. Call someone out by name if you want.",
+                _ => "Be impressed they made it. Or roast them. Your call."
             };
 
             var apiMessages = new List<OpenAIMessage>
@@ -257,10 +273,12 @@ KEEP RESPONSES SHORT (1-3 sentences). Be funny. Roast them. But also be helpful 
                     role = "system", 
                     content = $@"{_config.VicPersonality}
 
-CONTEXT: Wave {waveNumber} is starting. {mood}
-Generate a SHORT (1-2 sentences) comment about wave {waveNumber} starting. Be a roasting comedian. Curse if you want."
+Players: {playerNames}
+Wave {waveNumber} is starting. {mood}
+
+Generate ONE short comment (1-2 sentences) about the wave starting. Natural, not cringe."
                 },
-                new OpenAIMessage { role = "user", content = $"Wave {waveNumber} is starting!" }
+                new OpenAIMessage { role = "user", content = $"Wave {waveNumber} starting." }
             };
 
             var request = new OpenAIRequest
@@ -268,7 +286,7 @@ Generate a SHORT (1-2 sentences) comment about wave {waveNumber} starting. Be a 
                 model = _config.OpenAIModel,
                 messages = apiMessages,
                 temperature = 1.0f,
-                max_tokens = 100
+                max_tokens = 80
             };
 
             string jsonBody = JsonConvert.SerializeObject(request);
@@ -429,7 +447,7 @@ Generate a SHORT (1-2 sentences) comment about wave {waveNumber} starting. Be a 
         {
             if (string.IsNullOrEmpty(_config.OpenAIApiKey) || _config.OpenAIApiKey == "YOUR_OPENAI_API_KEY")
             {
-                ShowVicMessage(player, "My connection to the void is severed... the masters have not configured my voice...");
+                ShowVicMessage(player, "Can't talk right now. Something's wrong with my head.");
                 return;
             }
 
@@ -446,6 +464,14 @@ Generate a SHORT (1-2 sentences) comment about wave {waveNumber} starting. Be a 
             conversation.LastInteraction = DateTime.UtcNow;
             conversation.TotalInteractions++;
             conversation.PlayerName = player.displayName;
+
+            // Track bribe attempts
+            string lowerMsg = message.ToLower();
+            if (lowerMsg.Contains("token") || lowerMsg.Contains("give") || lowerMsg.Contains("free") || 
+                lowerMsg.Contains("please") || lowerMsg.Contains("bribe") || lowerMsg.Contains("money"))
+            {
+                conversation.BribeAttempts++;
+            }
 
             // Add player message to history
             conversation.Messages.Add(new ChatMessage { Role = "user", Content = message });
@@ -517,19 +543,18 @@ Generate a SHORT (1-2 sentences) comment about wave {waveNumber} starting. Be a 
                     // Show message to player
                     ShowVicMessage(player, vicMessage);
 
-                    // Check if Vic is giving tokens
+                    // Check if Vic is giving tokens (very rarely)
                     CheckForTokenGift(player, vicMessage, conversation);
 
-                    // Check if Vic is giving a weapon
-                    CheckForWeaponGift(player, vicMessage, conversation);
-
-                    // Check if Vic mentioned a quest
+                    // Check if Vic mentioned a quest/task
                     if (_config.EnableQuests && !_activeQuests.ContainsKey(player.userID))
                     {
-                        if (vicMessage.ToLower().Contains("challenge") || vicMessage.ToLower().Contains("quest") || 
-                            vicMessage.ToLower().Contains("task") || vicMessage.ToLower().Contains("prove"))
+                        string lowerVic = vicMessage.ToLower();
+                        if (lowerVic.Contains("task") || lowerVic.Contains("shoot") || 
+                            lowerVic.Contains("kill") || lowerVic.Contains("challenge"))
                         {
-                            timer.Once(3f, () => GiveRandomQuest(player));
+                            // Check if it's a troll task involving another player
+                            CheckForTrollTask(player, vicMessage);
                         }
                     }
 
@@ -545,28 +570,18 @@ Generate a SHORT (1-2 sentences) comment about wave {waveNumber} starting. Be a 
 
         private void CheckForTokenGift(BasePlayer player, string message, PlayerConversation conversation)
         {
-            // Look for token gift patterns in Vic's response
+            // Look for EXACT token gift pattern - "here's X tokens" or "fine here's X tokens"
             string lowerMessage = message.ToLower();
             
-            // Patterns: "take X tokens", "here's X tokens", "X blood tokens", "giving you X"
-            string[] tokenPatterns = { "take", "here's", "giving you", "have", "fine", "alright" };
-            
-            bool foundGiftIntent = false;
-            foreach (var pattern in tokenPatterns)
-            {
-                if (lowerMessage.Contains(pattern) && lowerMessage.Contains("token"))
-                {
-                    foundGiftIntent = true;
-                    break;
-                }
-            }
-
-            if (!foundGiftIntent) return;
+            // Only give if Vic says exactly "here's [number] tokens"
+            if (!lowerMessage.Contains("here's") || !lowerMessage.Contains("token"))
+                return;
 
             // Extract number from message
             int tokenAmount = ExtractNumber(message);
             
-            if (tokenAmount > 0 && tokenAmount <= 1000) // Cap at 1000 per gift
+            // Cap at 100 tokens max - be stingy
+            if (tokenAmount > 0 && tokenAmount <= 100)
             {
                 // Give tokens via KillaDome
                 if (KillaDome != null)
@@ -580,59 +595,19 @@ Generate a SHORT (1-2 sentences) comment about wave {waveNumber} starting. Be a 
             }
         }
 
-        private void CheckForWeaponGift(BasePlayer player, string message, PlayerConversation conversation)
+        private void CheckForTrollTask(BasePlayer player, string vicMessage)
         {
-            string lowerMessage = message.ToLower();
-            
-            // Check for weapon gift intent
-            if (!lowerMessage.Contains("take this") && !lowerMessage.Contains("here's a") && 
-                !lowerMessage.Contains("giving you a") && !lowerMessage.Contains("have this"))
-                return;
-
-            // Check for weapon names
-            Dictionary<string, string> weapons = new Dictionary<string, string>
+            // Check if Vic assigned a troll task involving another player
+            foreach (var otherPlayer in BasePlayer.activePlayerList)
             {
-                { "ak", "rifle.ak" },
-                { "ak-47", "rifle.ak" },
-                { "ak47", "rifle.ak" },
-                { "mp5", "smg.mp5" },
-                { "python", "pistol.python" },
-                { "revolver", "pistol.python" },
-                { "shotgun", "shotgun.pump" },
-                { "pump", "shotgun.pump" },
-                { "lr", "rifle.lr300" },
-                { "lr-300", "rifle.lr300" },
-                { "lr300", "rifle.lr300" },
-                { "m249", "lmg.m249" },
-                { "tommy", "smg.thompson" },
-                { "thompson", "smg.thompson" },
-                { "custom", "smg.2" },
-                { "semi", "rifle.semiauto" },
-                { "bolt", "rifle.bolt" }
-            };
-
-            foreach (var weapon in weapons)
-            {
-                if (lowerMessage.Contains(weapon.Key))
+                if (otherPlayer.userID == player.userID) continue;
+                
+                if (vicMessage.ToLower().Contains(otherPlayer.displayName.ToLower()))
                 {
-                    GiveWeapon(player, weapon.Value, conversation);
+                    // Vic mentioned another player - could be a troll task
+                    // The quest system will handle tracking if needed
                     break;
                 }
-            }
-        }
-
-        private void GiveWeapon(BasePlayer player, string shortname, PlayerConversation conversation)
-        {
-            var item = ItemManager.CreateByName(shortname);
-            if (item != null)
-            {
-                if (!player.inventory.GiveItem(item))
-                {
-                    item.Drop(player.transform.position, Vector3.up);
-                }
-                conversation.GiftsGiven++;
-                player.ChatMessage($"<color=#00ff00>[Vic gave you a weapon!]</color>");
-                Puts($"[VicAI] Gave {shortname} to {player.displayName}");
             }
         }
 
@@ -667,37 +642,44 @@ Generate a SHORT (1-2 sentences) comment about wave {waveNumber} starting. Be a 
             StringBuilder sb = new StringBuilder();
             sb.AppendLine(_config.VicPersonality);
             sb.AppendLine();
-            sb.AppendLine($"Current context:");
-            sb.AppendLine($"- Player name: {player.displayName}");
+            sb.AppendLine($"CURRENT CONTEXT:");
+            sb.AppendLine($"- You are talking to: {player.displayName}");
             sb.AppendLine($"- Current wave: {_currentWave}");
-            sb.AppendLine($"- Player's total conversations with you: {conversation.TotalInteractions}");
-            sb.AppendLine($"- Gifts you've given this player: {conversation.GiftsGiven}");
-            sb.AppendLine($"- Total tokens gifted to this player: {conversation.TokensGifted}");
+            sb.AppendLine($"- Times they've talked to you: {conversation.TotalInteractions}");
+            sb.AppendLine($"- Times they've tried to bribe you: {conversation.BribeAttempts}");
+            sb.AppendLine($"- Tokens you've given them total: {conversation.TokensGifted}");
 
-            // Mood based on wave - nice early, mean late
+            // List other players for gossip
+            var otherPlayers = BasePlayer.activePlayerList.Where(p => p.userID != player.userID).ToList();
+            if (otherPlayers.Count > 0)
+            {
+                sb.AppendLine($"- Other players in game: {string.Join(", ", otherPlayers.Select(p => p.displayName))}");
+                sb.AppendLine("- Feel free to gossip about these other players, suggest troll tasks like 'shoot [name]', talk shit about them, etc.");
+            }
+
+            // Mood based on wave
             string mood = _currentWave switch
             {
-                <= 3 => "You are FRIENDLY and helpful. Be supportive, give tips, be a good homie. Light roasts only.",
-                <= 6 => "You're getting annoyed. Mix helpful tips with sarcastic roasts. Be more mean than nice.",
-                <= 10 => "You're PISSED. Roast them hard. Be savage. Still give tips if asked but be rude about it.",
-                _ => "You are BRUTAL. No mercy. Maximum roast. Only give gifts if they REALLY impress you."
+                <= 3 => "Be chill and helpful. Give tips. You like this player so far.",
+                <= 6 => "Getting bored. More sarcastic. Might suggest some chaos.",
+                <= 10 => "Annoyed. Roast them. Suggest troll tasks for entertainment.",
+                _ => "Impressed they made it. Mix respect with roasts."
             };
-            sb.AppendLine($"- Your current mood: {mood}");
+            sb.AppendLine($"- Your mood: {mood}");
 
-            // Gift guidelines based on wave
-            string giftMood = _currentWave switch
-            {
-                <= 3 => "Be generous with small gifts (50-100 tokens) if they ask nicely or make you laugh.",
-                <= 6 => "Only give gifts if they're creative or funny. 100-200 tokens max.",
-                <= 10 => "Make them WORK for gifts. Only reward impressive persuasion. Up to 300 tokens.",
-                _ => "You can be generous since it's hard. Give 200-500 tokens if convinced. Give weapons to survivors."
-            };
-            sb.AppendLine($"- Gift policy: {giftMood}");
+            // STRICT gift policy
+            sb.AppendLine();
+            sb.AppendLine("TOKEN POLICY - BE STINGY:");
+            sb.AppendLine("- Say NO to most token requests");
+            sb.AppendLine("- Only give tokens after 3+ impressive attempts");
+            sb.AppendLine("- Max 25-50 tokens if you do give any");
+            sb.AppendLine("- To give tokens say EXACTLY: 'Fine here's [number] tokens'");
+            sb.AppendLine("- You do NOT have guns to give. Ever.");
 
             if (_activeQuests.ContainsKey(player.userID))
             {
                 var quest = _activeQuests[player.userID];
-                sb.AppendLine($"- Active quest: {quest.Description} ({quest.CurrentCount}/{quest.TargetCount})");
+                sb.AppendLine($"- Their active task: {quest.Description} ({quest.CurrentCount}/{quest.TargetCount})");
             }
 
             return sb.ToString();
@@ -982,12 +964,18 @@ Generate a SHORT (1-2 sentences) comment about wave {waveNumber} starting. Be a 
                 return; // No API key, skip
             }
 
+            // Get player names for gossip potential
+            var players = BasePlayer.activePlayerList.ToList();
+            string playerNames = players.Count > 0 
+                ? string.Join(", ", players.Select(p => p.displayName)) 
+                : "nobody";
+
             string mood = _currentWave switch
             {
-                <= 3 => "Be friendly and give a helpful tip or encouragement.",
-                <= 6 => "Be sarcastic. Make fun of their gameplay or give a backhanded tip.",
-                <= 10 => "Roast them HARD. Be savage and mean.",
-                _ => "Go absolutely OFF. Maximum brutality."
+                <= 3 => "Be chill. Give a tip or encouragement. Address a player by name if you want.",
+                <= 6 => "Be sarcastic. Maybe gossip about one player to another. Suggest some chaos.",
+                <= 10 => "Roast someone by name. Suggest troll tasks. Create drama.",
+                _ => "Pick a player and roast them hard. Or compliment a survivor."
             };
 
             var apiMessages = new List<OpenAIMessage>
@@ -997,23 +985,29 @@ Generate a SHORT (1-2 sentences) comment about wave {waveNumber} starting. Be a 
                     role = "system", 
                     content = $@"{_config.VicPersonality}
 
-You are watching players survive wave {_currentWave}. {mood}
-Generate a SHORT (1-2 sentences) random comment. It can be:
-- A roast about their gameplay
-- A tip (delivered rudely or nicely based on wave)
-- Commentary on the zombies
-- Trash talk
-Be a comedian. Curse if you want. Keep it funny."
+Players in game: {playerNames}
+Current wave: {_currentWave}
+
+{mood}
+
+Generate ONE short comment (1-2 sentences). Be natural, not cringe. You can:
+- Address a specific player by name
+- Gossip about one player to everyone
+- Give a tip
+- Suggest a troll task involving shooting a teammate
+- Just make an observation
+
+Keep it natural and short."
                 },
-                new OpenAIMessage { role = "user", content = "Say something to the players." }
+                new OpenAIMessage { role = "user", content = "Say something." }
             };
 
             var request = new OpenAIRequest
             {
                 model = _config.OpenAIModel,
                 messages = apiMessages,
-                temperature = 1.1f,
-                max_tokens = 100
+                temperature = 1.0f,
+                max_tokens = 80
             };
 
             string jsonBody = JsonConvert.SerializeObject(request);
