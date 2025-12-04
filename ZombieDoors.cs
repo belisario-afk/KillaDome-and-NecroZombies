@@ -427,6 +427,37 @@ namespace Oxide.Plugins
             }
         }
 
+        // --- API Methods (Called by CaptainPrice) ---
+
+        private void ForceOpenDoor(ulong doorId)
+        {
+            if (_doorLookup.TryGetValue(doorId, out DoorInfo info))
+            {
+                var door = BaseNetworkable.serverEntities.Find(new NetworkableId(doorId)) as Door;
+                if (door != null)
+                {
+                    info.IsOpen = true;
+                    SaveData();
+
+                    door.SetFlag(BaseEntity.Flags.Locked, false);
+                    door.SetFlag(BaseEntity.Flags.Open, true);
+                    door.SendNetworkUpdateImmediate();
+
+                    Effect.server.Run("assets/prefabs/locks/keypad/effects/lock.code.unlock.prefab", door.transform.position);
+                    Puts($"[ZombieDoors] Door {doorId} force opened by CaptainPrice");
+                }
+            }
+        }
+
+        private bool IsDoorLocked(ulong doorId)
+        {
+            if (_doorLookup.TryGetValue(doorId, out DoorInfo info))
+            {
+                return !info.IsOpen;
+            }
+            return false;
+        }
+
         // --- Helpers ---
 
         private void BuildLookup()
