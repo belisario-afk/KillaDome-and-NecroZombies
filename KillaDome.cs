@@ -2798,6 +2798,49 @@ namespace Oxide.Plugins
             }
         }
         
+        [ChatCommand("kdgivetokens")]
+        private void CmdGiveTokens(BasePlayer player, string command, string[] args)
+        {
+            if (player == null) return;
+            if (!player.IsAdmin)
+            {
+                SendReply(player, "You don't have permission to use this command.");
+                return;
+            }
+            
+            if (args.Length < 2)
+            {
+                SendReply(player, "Usage: /kdgivetokens <player> <amount>");
+                SendReply(player, "Example: /kdgivetokens PlayerName 1000");
+                return;
+            }
+            
+            var target = BasePlayer.Find(args[0]);
+            if (target == null)
+            {
+                SendReply(player, $"Player '{args[0]}' not found.");
+                return;
+            }
+            
+            int amount;
+            if (!int.TryParse(args[1], out amount))
+            {
+                SendReply(player, "Invalid amount. Please enter a number.");
+                return;
+            }
+            
+            var targetSession = GetSession(target.userID);
+            if (targetSession == null)
+            {
+                SendReply(player, $"Target player has no session.");
+                return;
+            }
+            
+            _tokenEconomy.AwardTokens(target.userID, amount);
+            SendReply(player, $"<color=#00FF00>✓</color> Gave {amount} Blood Tokens to {target.displayName}. New balance: {targetSession.Profile.Tokens}");
+            target.ChatMessage($"<color=#00FF00>+{amount} Blood Tokens</color> received from admin!");
+        }
+        
         [ChatCommand("dice")]
         private void CmdDiceGame(BasePlayer player, string command, string[] args)
         {

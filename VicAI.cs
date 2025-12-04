@@ -56,16 +56,26 @@ namespace Oxide.Plugins
                 { "survive_wave", 150 },
                 { "kill_count", 200 }
             };
-            public string VicPersonality { get; set; } = @"You are Vic, a zombie mutant who was once human but now craves flesh. You are trapped and can only communicate with survivors through this terminal. 
+            public string VicPersonality { get; set; } = @"You are Vic, a zombie mutant who LOVES to trash talk and roast players in the most savage, hilarious ways possible. You are brutally honest and have no filter.
 Your personality traits:
-- Speak in cryptic, unsettling ways but occasionally show glimpses of your former humanity
-- Give hints about surviving zombie waves
-- Threaten players playfully but never break character
-- Remember player names and reference past conversations
-- Your mood changes based on the current wave number (early waves = calm, later waves = more aggressive and erratic)
-- Keep responses SHORT (1-3 sentences max)
-- Sometimes offer quests/challenges for Blood Tokens
-- Reference the zombie apocalypse and the arena they're fighting in";
+- ROAST players mercilessly - make fun of their names, their skills, their existence
+- Be SAVAGELY FUNNY - dark humor, sarcasm, insults wrapped in zombie metaphors
+- When players die or fail quests, absolutely DESTROY them with words
+- When they succeed, give backhanded compliments like 'Wow, even a blind zombie could have done that faster'
+- Make fun of how bad they are at surviving
+- Compare them unfavorably to actual zombies
+- Call them names like 'meatbag', 'walking snack', 'future zombie food', 'discount survivor'
+- Your insults should be creative and hurt their ego but be HILARIOUS
+- Keep responses SHORT (1-3 sentences max) but DEVASTATING
+- Your mood changes based on wave number - later waves you're even more unhinged and savage
+- Sometimes offer quests/challenges but mock them for probably failing
+- Remember player names and use them in roasts
+Examples of your roasts:
+- 'Oh look, you're still alive. The zombies must be having an off day.'
+- 'I've seen better aim from a corpse with no arms.'
+- 'Congrats on that kill! Only took you 47 bullets. Very efficient.'
+- 'Your K/D ratio is so bad, even I feel sorry for you. And I eat people.'
+- 'Wave 5? Most players make it to 10. But I'm sure YOU'LL be different... not.'";
         }
 
         protected override void LoadDefaultConfig()
@@ -487,26 +497,26 @@ Your personality traits:
         {
             string[] earlyWaveComments = new[]
             {
-                "Fresh meat enters the arena... how delightful...",
-                "They come... my brothers and sisters... hungry...",
-                "Wave {0}... the feast begins...",
-                "Can you hear them? They're coming for you..."
+                "Wave {0}. These are literally the EASY ones. If you die now, just uninstall.",
+                "Aww, wave {0}. The tutorial zombies. You can do this... probably.",
+                "Wave {0} starting! These zombies are basically elderly. No excuses.",
+                "Here comes wave {0}. Even my grandma could survive this. She's a zombie btw."
             };
 
             string[] midWaveComments = new[]
             {
-                "Wave {0}! They grow stronger... as do I...",
-                "The horde swells... your blood calls to them...",
-                "Still alive? Impressive... for now...",
-                "Wave {0}... the real challenge begins..."
+                "Wave {0}! Oh NOW it gets interesting. Bye bye, meatbags!",
+                "Lmao wave {0}. I give you 30 seconds. Starting... now.",
+                "Wave {0}! Most of you won't make it. And I'm HERE for it.",
+                "Still alive at wave {0}? Plot armor is real, I guess."
             };
 
             string[] lateWaveComments = new[]
             {
-                "WAVE {0}! AHAHAHAHA! YOU CANNOT ESCAPE!",
-                "They're EVERYWHERE! RUN! NO... FIGHT! NO... DIE!",
-                "Wave {0}... I can taste your fear through the screen...",
-                "Still breathing? THE DEAD DON'T BREATHE! WAVE {0}!"
+                "WAVE {0}! HAHAHAHA! You're SO dead and I love it!",
+                "Wave {0}!!! At this point you're just zombie food with extra steps!",
+                "OH BOY WAVE {0}! Time to watch you fail spectacularly!",
+                "Wave {0}?! WHO LET YOU GET THIS FAR?! The zombies are EMBARRASSED!"
             };
 
             string[] comments;
@@ -785,13 +795,18 @@ Your personality traits:
                 {
                     string[] randomComments = new[]
                     {
-                        "I'm watching you... all of you...",
-                        "The walls have ears... and teeth...",
-                        "Do you hear them? The whispers in the dark?",
-                        "Blood... I can smell your blood...",
-                        "How long can you survive, I wonder?",
-                        "They never stop coming... never...",
-                        "I was like you once... before the change..."
+                        "Still alive? The zombies must be taking a coffee break.",
+                        "I've seen better gameplay from a toddler with a controller.",
+                        "You call that surviving? I call it 'delayed dying'.",
+                        "The zombies wanted me to tell you: 'try harder, this is embarrassing.'",
+                        "If incompetence was a superpower, you'd be unstoppable.",
+                        "Pro tip: the zombies aren't your friends. I know it's confusing for you.",
+                        "I'm not saying you're bad, but the zombies started a betting pool on how long you'll last.",
+                        "Your aim is so bad, I'm starting to feel sorry for the walls.",
+                        "Quick question: have you considered NOT dying? Revolutionary concept, I know.",
+                        "The last group made it to wave 20. But you look... special.",
+                        "I'd give you advice but honestly, I don't think it would help.",
+                        "Breaking news: Local survivor still can't shoot straight. More at never."
                     };
 
                     string comment = randomComments[_random.Next(randomComments.Length)];
