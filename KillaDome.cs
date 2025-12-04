@@ -1437,10 +1437,22 @@ namespace Oxide.Plugins
                 var profile = kvp.Value.Profile;
                 if (profile.HighestWave > 0)
                 {
+                    // Get display name from player or profile
+                    string displayName = profile.DisplayName;
+                    if (string.IsNullOrEmpty(displayName) || displayName == "Unknown")
+                    {
+                        var player = kvp.Value.Player;
+                        if (player != null && !string.IsNullOrEmpty(player.displayName))
+                        {
+                            displayName = player.displayName;
+                            profile.DisplayName = displayName; // Update profile for future
+                        }
+                    }
+                    
                     entries.Add(new LeaderboardEntry
                     {
                         SteamID = profile.SteamID,
-                        DisplayName = profile.DisplayName ?? "Unknown",
+                        DisplayName = displayName ?? "Unknown",
                         HighestWave = profile.HighestWave,
                         ZombieKills = profile.ZombieKills
                     });
@@ -1465,10 +1477,18 @@ namespace Oxide.Plugins
                         var profile = JsonConvert.DeserializeObject<PlayerProfile>(json);
                         if (profile != null && profile.HighestWave > 0)
                         {
+                            // Try to get display name from online player
+                            string displayName = profile.DisplayName;
+                            var onlinePlayer = BasePlayer.FindByID(steamId);
+                            if (onlinePlayer != null && !string.IsNullOrEmpty(onlinePlayer.displayName))
+                            {
+                                displayName = onlinePlayer.displayName;
+                            }
+                            
                             entries.Add(new LeaderboardEntry
                             {
                                 SteamID = profile.SteamID,
-                                DisplayName = profile.DisplayName ?? "Unknown",
+                                DisplayName = displayName ?? "Unknown",
                                 HighestWave = profile.HighestWave,
                                 ZombieKills = profile.ZombieKills
                             });
@@ -3182,6 +3202,12 @@ namespace Oxide.Plugins
                 IsSpectating = false;
                 CanLeaveMatch = true;
                 IsBuyingLife = false;
+                
+                // Set display name from player for leaderboard
+                if (player != null && !string.IsNullOrEmpty(player.displayName))
+                {
+                    Profile.DisplayName = player.displayName;
+                }
             }
         }
         
@@ -7428,15 +7454,23 @@ namespace Oxide.Plugins
             {
                 if (player == null || session == null) return;
                 
-                // Collect all players' match stats
+                // Collect all players' match stats (both in queue and spectating)
                 var allPlayers = new List<(string name, int kills, int tokens)>();
-                foreach (ulong steamId in _zombiesQueue)
+                var allSteamIds = new HashSet<ulong>(_zombiesQueue);
+                foreach (var spectateId in _spectatingPlayers)
+                {
+                    allSteamIds.Add(spectateId);
+                }
+                
+                foreach (ulong steamId in allSteamIds)
                 {
                     var p = BasePlayer.FindByID(steamId);
                     var s = _plugin.GetSession(steamId);
-                    if (p != null && s != null)
+                    if (s != null)
                     {
-                        allPlayers.Add((p.displayName, s.Profile.CurrentMatchKills, s.Profile.CurrentMatchTokens));
+                        // Get player name from player or session profile
+                        string playerName = p?.displayName ?? s.Profile.DisplayName ?? "Unknown";
+                        allPlayers.Add((playerName, s.Profile.CurrentMatchKills, s.Profile.CurrentMatchTokens));
                     }
                 }
                 
