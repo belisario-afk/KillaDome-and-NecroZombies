@@ -427,7 +427,7 @@ namespace Oxide.Plugins
             }
         }
 
-        // --- API Methods (Called by CaptainPrice) ---
+        // --- API Methods (Called by CaptainPrice and NecroZombies) ---
 
         private void ForceOpenDoor(ulong doorId)
         {
@@ -456,6 +456,48 @@ namespace Oxide.Plugins
                 return !info.IsOpen;
             }
             return false;
+        }
+        
+        /// <summary>
+        /// API: Check if a door is open (unlocked/purchased)
+        /// Called by NecroZombies for zone-based spawning
+        /// </summary>
+        private bool IsDoorOpen(string doorIdStr)
+        {
+            // Try to parse as ulong first
+            if (ulong.TryParse(doorIdStr, out ulong doorIdNum))
+            {
+                if (_doorLookup.TryGetValue(doorIdNum, out DoorInfo info))
+                {
+                    return info.IsOpen;
+                }
+            }
+            
+            // Also search by index/name in data list
+            int index = 0;
+            foreach (var info in _doorDataList)
+            {
+                if (doorIdStr == index.ToString() || doorIdStr == info.DoorId.ToString())
+                {
+                    return info.IsOpen;
+                }
+                index++;
+            }
+            
+            return false;  // Door not found = treat as closed
+        }
+        
+        /// <summary>
+        /// API: Get list of all door IDs for setup GUI
+        /// </summary>
+        private List<string> GetAllDoorIds()
+        {
+            var ids = new List<string>();
+            foreach (var info in _doorDataList)
+            {
+                ids.Add(info.DoorId.ToString());
+            }
+            return ids;
         }
 
         // --- Helpers ---

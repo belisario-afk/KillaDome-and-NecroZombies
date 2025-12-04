@@ -87,6 +87,14 @@ namespace Oxide.Plugins
             public int BannerSubSize = 18;
         }
 
+        // Zone definition - links spawn sets to doors
+        private class ZoneData
+        {
+            public string ZoneName = "";
+            public string LinkedDoorId = "";  // ZombieDoors door ID (optional)
+            public bool IsUnlocked = true;    // Zones without doors are unlocked by default
+        }
+
         private class ConfigData
         {
             public float ZombieHealth = 100f;
@@ -101,6 +109,9 @@ namespace Oxide.Plugins
             public WaveSettings Waves = new WaveSettings();
 
             public Dictionary<string, List<Vector3>> SpawnSets = new Dictionary<string, List<Vector3>>();
+            
+            // Zone system - link spawn sets to doors
+            public Dictionary<string, ZoneData> Zones = new Dictionary<string, ZoneData>();
         }
 
         protected override void LoadDefaultConfig()
@@ -347,7 +358,67 @@ namespace Oxide.Plugins
             public Vector3 LastKnownTargetPos;
             public ulong TargetPlayerId;
         }
+        
+        // Reference to ZombieDoors plugin for checking door status
+        [PluginReference] Plugin ZombieDoors;
 
+        #endregion
+
+        #region Zone System
+        
+        /// <summary>
+        /// Check if a zone is unlocked (either no door, or door is open)
+        /// </summary>
+        private bool IsZoneUnlocked(string zoneName)
+        {
+            if (_config.Zones == null || !_config.Zones.TryGetValue(zoneName, out var zone))
+                return true;  // No zone config = treat as unlocked
+                
+            // No linked door = always unlocked
+            if (string.IsNullOrEmpty(zone.LinkedDoorId))
+                return true;
+                
+            // Check if ZombieDoors plugin says this door is open
+            if (ZombieDoors != null)
+            {
+                var result = ZombieDoors.Call("IsDoorOpen", zone.LinkedDoorId);
+                if (result is bool isOpen)
+                    return isOpen;
+            }
+            
+            // Fallback: use stored state
+            return zone.IsUnlocked;
+        }
+        
+        /// <summary>
+        /// Get all unlocked spawn sets for current wave
+        /// Only spawns zombies from zones that are unlocked (door opened or no door)
+        /// </summary>
+        private List<Vector3> GetUnlockedSpawnPoints()
+        {
+            var unlockedPoints = new List<Vector3>();
+            
+            if (_config.SpawnSets == null || _config.SpawnSets.Count == 0)
+                return unlockedPoints;
+                
+            foreach (var kvp in _config.SpawnSets)
+            {
+                string setName = kvp.Key;
+                var points = kvp.Value;
+                
+                if (points == null || points.Count == 0)
+                    continue;
+                
+                // Check if this spawn set's zone is unlocked
+                if (IsZoneUnlocked(setName))
+                {
+                    unlockedPoints.AddRange(points);
+                }
+            }
+            
+            return unlockedPoints;
+        }
+        
         #endregion
 
         #region Hooks
@@ -610,7 +681,16 @@ namespace Oxide.Plugins
             SendReply(player, "<color=#00ffff>===== Spawn Sets =====</color>");
             foreach (var kvp in _config.SpawnSets)
             {
-                SendReply(player, $"<color=#55ff55>Set '{kvp.Key}':</color> {kvp.Value.Count} point(s)");
+                // Check if this set has a zone linked
+                string zoneInfo = "";
+                if (_config.Zones != null && _config.Zones.TryGetValue(kvp.Key, out var zone))
+                {
+                    bool unlocked = IsZoneUnlocked(kvp.Key);
+                    string doorInfo = string.IsNullOrEmpty(zone.LinkedDoorId) ? "no door" : $"door:{zone.LinkedDoorId}";
+                    zoneInfo = $" [Zone: {doorInfo}, {(unlocked ? "<color=#55ff55>UNLOCKED</color>" : "<color=#ff5555>LOCKED</color>")}]";
+                }
+                
+                SendReply(player, $"<color=#55ff55>Set '{kvp.Key}':</color> {kvp.Value.Count} point(s){zoneInfo}");
                 Puts($"[NecroZombies] Set '{kvp.Key}': {kvp.Value.Count} point(s)");
                 int idx = 0;
                 foreach (var p in kvp.Value)
@@ -624,6 +704,129 @@ namespace Oxide.Plugins
             if (_waveModeActive)
             {
                 SendReply(player, $"<color=#ffff00>Wave mode active:</color> Using spawn set '{_waveSpawnSetName ?? "none (fallback center)"}'");
+            }
+        }
+        
+        // /zzone create <zoneName> - Create a zone for a spawn set
+        [ChatCommand("zzone")]
+        private void CmdZZone(BasePlayer player, string command, string[] args)
+        {
+            if (player == null || !player.IsValid())
+                return;
+
+            if (!player.IsAdmin)
+            {
+                SendReply(player, "<color=#ff5555>You must be an admin to use this command.</color>");
+                return;
+            }
+
+            if (args.Length < 1)
+            {
+                SendReply(player, "<color=#ffcc55>Usage:</color>");
+                SendReply(player, "  /zzone create <zoneName> - Create zone (use same name as spawn set)");
+                SendReply(player, "  /zzone linkdoor <zoneName> <doorId> - Link zone to a ZombieDoor");
+                SendReply(player, "  /zzone unlinkdoor <zoneName> - Unlink door from zone");
+                SendReply(player, "  /zzone list - List all zones and their status");
+                return;
+            }
+
+            string action = args[0].ToLower();
+
+            if (action == "create")
+            {
+                if (args.Length < 2)
+                {
+                    SendReply(player, "<color=#ff5555>Usage: /zzone create <zoneName></color>");
+                    return;
+                }
+                
+                string zoneName = args[1].ToLower();
+                
+                if (_config.Zones == null)
+                    _config.Zones = new Dictionary<string, ZoneData>();
+                    
+                if (_config.Zones.ContainsKey(zoneName))
+                {
+                    SendReply(player, $"<color=#ff5555>Zone '{zoneName}' already exists!</color>");
+                    return;
+                }
+                
+                _config.Zones[zoneName] = new ZoneData
+                {
+                    ZoneName = zoneName,
+                    LinkedDoorId = "",
+                    IsUnlocked = true  // No door = always unlocked
+                };
+                SaveConfig();
+                
+                SendReply(player, $"<color=#55ff55>Created zone '{zoneName}'. Use /zzone linkdoor {zoneName} <doorId> to link to a door.</color>");
+            }
+            else if (action == "linkdoor")
+            {
+                if (args.Length < 3)
+                {
+                    SendReply(player, "<color=#ff5555>Usage: /zzone linkdoor <zoneName> <doorId></color>");
+                    return;
+                }
+                
+                string zoneName = args[1].ToLower();
+                string doorId = args[2];
+                
+                if (_config.Zones == null || !_config.Zones.ContainsKey(zoneName))
+                {
+                    SendReply(player, $"<color=#ff5555>Zone '{zoneName}' not found! Create it first with /zzone create {zoneName}</color>");
+                    return;
+                }
+                
+                _config.Zones[zoneName].LinkedDoorId = doorId;
+                _config.Zones[zoneName].IsUnlocked = false;  // Door-linked zones start locked
+                SaveConfig();
+                
+                SendReply(player, $"<color=#55ff55>Linked zone '{zoneName}' to door '{doorId}'. Zombies won't spawn here until door is opened.</color>");
+            }
+            else if (action == "unlinkdoor")
+            {
+                if (args.Length < 2)
+                {
+                    SendReply(player, "<color=#ff5555>Usage: /zzone unlinkdoor <zoneName></color>");
+                    return;
+                }
+                
+                string zoneName = args[1].ToLower();
+                
+                if (_config.Zones == null || !_config.Zones.ContainsKey(zoneName))
+                {
+                    SendReply(player, $"<color=#ff5555>Zone '{zoneName}' not found!</color>");
+                    return;
+                }
+                
+                _config.Zones[zoneName].LinkedDoorId = "";
+                _config.Zones[zoneName].IsUnlocked = true;
+                SaveConfig();
+                
+                SendReply(player, $"<color=#55ff55>Unlinked door from zone '{zoneName}'. Zone is now always unlocked.</color>");
+            }
+            else if (action == "list")
+            {
+                if (_config.Zones == null || _config.Zones.Count == 0)
+                {
+                    SendReply(player, "<color=#ffcc55>No zones configured. Use /zzone create <name> to create one.</color>");
+                    return;
+                }
+                
+                SendReply(player, "<color=#00ffff>===== Zones =====</color>");
+                foreach (var kvp in _config.Zones)
+                {
+                    var zone = kvp.Value;
+                    bool unlocked = IsZoneUnlocked(kvp.Key);
+                    string doorInfo = string.IsNullOrEmpty(zone.LinkedDoorId) ? "no door" : $"door:{zone.LinkedDoorId}";
+                    string status = unlocked ? "<color=#55ff55>UNLOCKED</color>" : "<color=#ff5555>LOCKED</color>";
+                    SendReply(player, $"  <color=#55ff55>{kvp.Key}:</color> {doorInfo} - {status}");
+                }
+            }
+            else
+            {
+                SendReply(player, "<color=#ff5555>Unknown action. Use: create, linkdoor, unlinkdoor, or list</color>");
             }
         }
 
@@ -1444,40 +1647,16 @@ namespace Oxide.Plugins
         private int _spawnPointIndex = 0;
         
         /// <summary>
-        /// Returns a spawn position ONLY from configured spawn sets.
-        /// Returns Vector3.zero if no valid spawn set is configured.
-        /// Zombies ONLY spawn at /zspawnadd points, never near players or fallback positions.
+        /// Returns a spawn position ONLY from UNLOCKED zones.
+        /// Returns Vector3.zero if no valid/unlocked spawn points exist.
+        /// Zombies ONLY spawn at /zspawnadd points from zones without doors or with opened doors.
         /// </summary>
         private Vector3 GetRandomSpawnPosition()
         {
-            // Find ANY valid spawn set with points
-            List<Vector3> spawnPoints = null;
+            // Get spawn points ONLY from unlocked zones (no door or door is open)
+            List<Vector3> spawnPoints = GetUnlockedSpawnPoints();
             
-            // First try the specified spawn set
-            if (_waveSpawnSetName != null &&
-                _config.SpawnSets != null &&
-                _config.SpawnSets.TryGetValue(_waveSpawnSetName, out var specificList) &&
-                specificList != null &&
-                specificList.Count > 0)
-            {
-                spawnPoints = specificList;
-            }
-            // Otherwise try to find ANY spawn set with points
-            else if (_config.SpawnSets != null && _config.SpawnSets.Count > 0)
-            {
-                foreach (var kvp in _config.SpawnSets)
-                {
-                    if (kvp.Value != null && kvp.Value.Count > 0)
-                    {
-                        spawnPoints = kvp.Value;
-                        _waveSpawnSetName = kvp.Key;  // Use this set
-                        Puts($"[NecroZombies] Using first available spawn set '{kvp.Key}' with {kvp.Value.Count} point(s)");
-                        break;
-                    }
-                }
-            }
-            
-            // If we found valid spawn points, use them
+            // If we found valid UNLOCKED spawn points, use them
             if (spawnPoints != null && spawnPoints.Count > 0)
             {
                 // Round-robin through spawn points instead of random
@@ -1490,7 +1669,7 @@ namespace Oxide.Plugins
                 return point + new Vector3(circle.x, 0f, circle.y);
             }
             
-            // NO fallback - zombies ONLY spawn at configured spawn points
+            // NO fallback - zombies ONLY spawn at configured AND unlocked spawn points
             // Return Vector3.zero to signal no valid spawn position
             return Vector3.zero;
         }

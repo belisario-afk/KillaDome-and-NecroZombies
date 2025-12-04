@@ -3062,6 +3062,168 @@ namespace Oxide.Plugins
             target.ChatMessage($"<color=#00FF00>+{amount} Blood Tokens</color> received from admin!");
         }
         
+        // Owner Setup GUI - Visual admin panel for all setup commands
+        [ChatCommand("kdsetup")]
+        private void CmdSetup(BasePlayer player, string command, string[] args)
+        {
+            if (player == null) return;
+            if (!player.IsAdmin)
+            {
+                SendReply(player, "You must be an admin to use this command.");
+                return;
+            }
+            
+            ShowOwnerSetupUI(player);
+        }
+        
+        private void ShowOwnerSetupUI(BasePlayer player)
+        {
+            var container = new CuiElementContainer();
+            string panelName = "KDSetupUI";
+            
+            // Destroy existing UI
+            CuiHelper.DestroyUi(player, panelName);
+            
+            // Main panel - dark background
+            container.Add(new CuiPanel
+            {
+                CursorEnabled = true,
+                RectTransform = { AnchorMin = "0.15 0.1", AnchorMax = "0.85 0.9" },
+                Image = { Color = "0.1 0.1 0.1 0.95" }
+            }, "Overlay", panelName);
+            
+            // Header
+            container.Add(new CuiPanel
+            {
+                RectTransform = { AnchorMin = "0 0.92", AnchorMax = "1 1" },
+                Image = { Color = "0.8 0.2 0.2 1" }
+            }, panelName, "SetupHeader");
+            
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "⚙️ KILLADOME OWNER SETUP", Align = TextAnchor.MiddleCenter, FontSize = 24, Color = "1 1 1 1" },
+                RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1" }
+            }, "SetupHeader");
+            
+            // Close button
+            container.Add(new CuiButton
+            {
+                Button = { Color = "0.5 0.1 0.1 1", Command = "kdsetup.close" },
+                Text = { Text = "✕", Align = TextAnchor.MiddleCenter, FontSize = 20, Color = "1 1 1 1" },
+                RectTransform = { AnchorMin = "0.95 0.92", AnchorMax = "1 1" }
+            }, panelName);
+            
+            // === SECTION: KillaDome Setup ===
+            AddSetupSection(container, panelName, "KillaDome Setup", 0.80f, new[]
+            {
+                ("Set Lobby Spawn", "kdlobby set", "Sets where players spawn in lobby"),
+                ("Set Spectate", "kd setspectate", "Sets spectator camera position"),
+                ("Set Arena (Zombies)", "kd setarena zombies", "Sets player spawn in zombie arena"),
+                ("Set Teleporter", "kd setteleporter zombies", "Sets zombie mode teleporter location"),
+                ("Spawn Teleporter Tiles", "kd spawntiles", "Refreshes teleporter orbs in lobby")
+            });
+            
+            // === SECTION: Zombie Spawns ===
+            AddSetupSection(container, panelName, "Zombie Spawn Setup", 0.58f, new[]
+            {
+                ("Add Spawn Point", "zspawnadd_prompt", "Add zombie spawn at your position"),
+                ("Debug Spawns", "zspawndebug", "List all configured spawn points"),
+                ("Create Zone", "zzone_prompt", "Create a zone for spawn sets"),
+                ("List Zones", "zzone list", "Show all zones and their status")
+            });
+            
+            // === SECTION: Perks & Features ===
+            AddSetupSection(container, panelName, "Perks & Features", 0.36f, new[]
+            {
+                ("Spawn Juggernog", "spawnperk jug", "Spawn Juggernog perk machine"),
+                ("Spawn Speed Cola", "spawnperk speed", "Spawn Speed Cola perk machine"),
+                ("Spawn Quick Revive", "spawnperk revive", "Spawn Quick Revive perk machine"),
+                ("Spawn Double Tap", "spawnperk double", "Spawn Double Tap perk machine")
+            });
+            
+            // === SECTION: Mystery Box & Doors ===
+            AddSetupSection(container, panelName, "Mystery Box & Doors", 0.14f, new[]
+            {
+                ("Add Mystery Box Spawn", "mbox_addspawn", "Add Mystery Box spawn location"),
+                ("List Mystery Spawns", "mbox_listspawns", "Show all Mystery Box locations"),
+                ("Reset Zombie Doors", "zdoor reset", "Reset/respawn all zombie doors"),
+                ("Force Spawn Boxes", "mbox_forcespawn", "Force spawn Mystery Boxes now")
+            });
+            
+            CuiHelper.AddUi(player, container);
+        }
+        
+        private void AddSetupSection(CuiElementContainer container, string parent, string title, float topAnchor, (string label, string command, string tooltip)[] buttons)
+        {
+            float height = 0.18f;
+            string sectionName = $"Section_{title.Replace(" ", "")}";
+            
+            // Section title
+            container.Add(new CuiLabel
+            {
+                Text = { Text = $"▸ {title}", Align = TextAnchor.MiddleLeft, FontSize = 16, Color = "1 0.8 0.2 1" },
+                RectTransform = { AnchorMin = $"0.02 {topAnchor}", AnchorMax = $"0.98 {topAnchor + 0.04f}" }
+            }, parent);
+            
+            // Buttons grid (2 columns)
+            float buttonWidth = 0.48f;
+            float buttonHeight = 0.035f;
+            float startY = topAnchor - 0.02f;
+            
+            for (int i = 0; i < buttons.Length; i++)
+            {
+                int col = i % 2;
+                int row = i / 2;
+                float x = col == 0 ? 0.02f : 0.51f;
+                float y = startY - (row * (buttonHeight + 0.01f));
+                
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.2 0.4 0.6 1", Command = $"kdsetup.run {buttons[i].command}" },
+                    Text = { Text = buttons[i].label, Align = TextAnchor.MiddleCenter, FontSize = 12, Color = "1 1 1 1" },
+                    RectTransform = { AnchorMin = $"{x} {y - buttonHeight}", AnchorMax = $"{x + buttonWidth} {y}" }
+                }, parent);
+            }
+        }
+        
+        [ConsoleCommand("kdsetup.close")]
+        private void CmdSetupClose(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            CuiHelper.DestroyUi(player, "KDSetupUI");
+        }
+        
+        [ConsoleCommand("kdsetup.run")]
+        private void CmdSetupRun(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || !player.IsAdmin) return;
+            
+            string fullCommand = string.Join(" ", arg.Args);
+            
+            // Handle special prompt commands
+            if (fullCommand == "zspawnadd_prompt")
+            {
+                CuiHelper.DestroyUi(player, "KDSetupUI");
+                SendReply(player, "<color=#ffcc55>Enter spawn set name:</color> /zspawnadd <setname>");
+                SendReply(player, "Example: /zspawnadd arena1");
+                return;
+            }
+            if (fullCommand == "zzone_prompt")
+            {
+                CuiHelper.DestroyUi(player, "KDSetupUI");
+                SendReply(player, "<color=#ffcc55>Zone Commands:</color>");
+                SendReply(player, "  /zzone create <name> - Create a zone");
+                SendReply(player, "  /zzone linkdoor <zone> <doorId> - Link zone to door");
+                return;
+            }
+            
+            // Close UI and run the command
+            CuiHelper.DestroyUi(player, "KDSetupUI");
+            player.SendConsoleCommand($"chat.say /{fullCommand}");
+        }
+        
         [ChatCommand("dice")]
         private void CmdDiceGame(BasePlayer player, string command, string[] args)
         {
