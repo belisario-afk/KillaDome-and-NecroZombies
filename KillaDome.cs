@@ -1050,9 +1050,17 @@ namespace Oxide.Plugins
             // Handle zombie/NPC deaths (for Black Ops zombies mode)
             if (info == null) return;
             
-            // Check if this is a zombie kill (NPCPlayer or scarecrow types)
+            // Check if this is a zombie kill (NPCPlayer/scarecrow OR BaseNpc/wolf types)
+            bool isZombie = false;
             var npc = entity as NPCPlayer;
-            if (npc == null) return;
+            var baseNpc = entity as BaseNpc;
+            
+            // Scarecrow zombies are NPCPlayer
+            if (npc != null) isZombie = true;
+            // Hellhounds/wolves are BaseNpc
+            else if (baseNpc != null) isZombie = true;
+            
+            if (!isZombie) return;
             
             var zombieAttacker = info.InitiatorPlayer;
             if (zombieAttacker != null && zombieAttacker.IsConnected && _config.EnableZombiesMode)
@@ -1075,6 +1083,11 @@ namespace Oxide.Plugins
                     
                     // Update HUD with kill count
                     UpdateZombieKillHUD(zombieAttacker, session);
+                    
+                    // Save profile to ensure stats persist
+                    _saveManager?.SavePlayerProfile(zombieAttacker.userID, session.Profile);
+                    
+                    LogDebug($"{zombieAttacker.displayName} killed a zombie: MatchKills={session.Profile.CurrentMatchKills}, MatchTokens={session.Profile.CurrentMatchTokens}");
                 }
                 
                 LogDebug($"{zombieAttacker.displayName} killed a zombie (+{tokensAwarded} tokens)");

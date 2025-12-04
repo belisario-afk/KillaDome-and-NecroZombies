@@ -22,10 +22,10 @@ namespace Oxide.Plugins
             public string ProfileName = "default";
 
             public float Health = 100f;
-            public float Speed = 6.5f;
+            public float Speed = 3.5f;  // Walking speed by default
 
-            public string MeleeShortname = "knife.bone";
-            public ulong MeleeSkinId = 3612162757;
+            public string MeleeShortname = "bone.club";  // Bone club for melee attacks
+            public ulong MeleeSkinId = 0;
 
             // Primary clothing item
             public string ClothingShortname = "halloween.mummysuit";
@@ -90,9 +90,9 @@ namespace Oxide.Plugins
         private class ConfigData
         {
             public float ZombieHealth = 100f;
-            public float ZombieSpeed = 6.5f;
-            public string MeleeShortname = "knife.bone";
-            public ulong MeleeSkinId = 3612162757;
+            public float ZombieSpeed = 3.5f;  // Walking speed, not running
+            public string MeleeShortname = "bone.club";  // Bone club for melee
+            public ulong MeleeSkinId = 0;
             public string ClothingShortname = "halloween.mummysuit";
             public ulong ClothingSkinId = 0;
             public string ZombieName = "Necro Zombie";
@@ -111,9 +111,9 @@ namespace Oxide.Plugins
             {
                 ProfileName = "default",
                 Health = _config.ZombieHealth,
-                Speed = _config.ZombieSpeed,
-                MeleeShortname = _config.MeleeShortname,
-                MeleeSkinId = _config.MeleeSkinId,
+                Speed = 3.5f,  // Walking speed
+                MeleeShortname = "bone.club",
+                MeleeSkinId = 0,
                 ClothingShortname = _config.ClothingShortname,
                 ClothingSkinId = _config.ClothingSkinId,
                 DisplayName = _config.ZombieName,
@@ -121,14 +121,14 @@ namespace Oxide.Plugins
                 PrefabType = "scarecrow"
             };
 
-            // Necro Runner - Fast scarecrow with hoodie outfit
+            // Necro Runner - Slightly faster walker with hoodie outfit
             _config.Profiles["runner"] = new ZombieProfile
             {
                 ProfileName = "runner",
                 Health = 75f,
-                Speed = 10f,
-                MeleeShortname = "knife.bone",
-                MeleeSkinId = _config.MeleeSkinId,
+                Speed = 5f,  // Faster walk, still not running
+                MeleeShortname = "bone.club",
+                MeleeSkinId = 0,
                 ClothingShortname = "",  // No primary clothing
                 ClothingSkinId = 0,
                 HeadwearShortname = "mask.balaclava",
@@ -147,7 +147,7 @@ namespace Oxide.Plugins
             {
                 ProfileName = "brute",
                 Health = 300f,
-                Speed = 4f,
+                Speed = 2.5f,  // Slow walking tank
                 MeleeShortname = "",  // No melee weapon
                 MeleeSkinId = 0,
                 ClothingShortname = "halloween.mummysuit",
@@ -169,9 +169,9 @@ namespace Oxide.Plugins
             {
                 ProfileName = "burner",
                 Health = 120f,
-                Speed = 7.5f,
-                MeleeShortname = "knife.bone",
-                MeleeSkinId = _config.MeleeSkinId,
+                Speed = 4f,  // Walking speed
+                MeleeShortname = "bone.club",
+                MeleeSkinId = 0,
                 ClothingShortname = "halloween.mummysuit",
                 ClothingSkinId = 0,
                 DisplayName = "Necro Burner",
@@ -183,9 +183,9 @@ namespace Oxide.Plugins
             {
                 ProfileName = "stalker",
                 Health = 125f,
-                Speed = 8.0f,
-                MeleeShortname = "knife.bone",
-                MeleeSkinId = _config.MeleeSkinId,
+                Speed = 4.5f,  // Walking speed
+                MeleeShortname = "bone.club",
+                MeleeSkinId = 0,
                 ClothingShortname = "halloween.mummysuit",
                 ClothingSkinId = 0,
                 DisplayName = "Necro Stalker",
@@ -198,7 +198,7 @@ namespace Oxide.Plugins
             {
                 ProfileName = "hellhound",
                 Health = 150f,
-                Speed = 9.0f,
+                Speed = 7.0f,  // Hellhounds can be faster
                 MeleeShortname = "",
                 MeleeSkinId = 0,
                 ClothingShortname = "",
@@ -1001,12 +1001,10 @@ namespace Oxide.Plugins
         }
 
         /// <summary>
-        /// Main Zombie AI tick - handles all zombie behavior like Black Ops zombies
-        /// - Continuous NavAgent movement toward players (no teleport hops)
-        /// - Speed variations (walkers shuffle, runners sprint)
-        /// - Lunge attacks when close to player
-        /// - Melee damage when in attack range
-        /// - Gore VFX on attacks
+        /// Main Zombie AI tick - handles zombie targeting and movement
+        /// - Continuous NavAgent walking toward players
+        /// - 360° vision with far range - zombies always find players
+        /// - Natural bone club melee attacks (handled by NPC AI)
         /// </summary>
         private void ZombieAITick()
         {
@@ -1037,14 +1035,14 @@ namespace Oxide.Plugins
                 // Get or create behavior state for this zombie
                 if (!_zombieStates.TryGetValue(uid, out var state))
                 {
-                    float baseSpeed = npc.NavAgent != null ? npc.NavAgent.speed : 6.5f;
+                    float baseSpeed = npc.NavAgent != null ? npc.NavAgent.speed : 3.5f;
                     state = new ZombieBehaviorState
                     {
                         BaseSpeed = baseSpeed,
                         CurrentSpeed = baseSpeed,
                         IsLunging = false,
                         LungeEndTime = 0f,
-                        NextAttackTime = now + UnityEngine.Random.Range(0.5f, 1.5f),
+                        NextAttackTime = 0f,
                         LastTargetUpdateTime = 0f,
                         LastKnownTargetPos = Vector3.zero,
                         TargetPlayerId = 0
@@ -1054,8 +1052,8 @@ namespace Oxide.Plugins
 
                 Vector3 npcPos = npc.transform.position;
 
-                // Find nearest player (search whole map)
-                BasePlayer target = FindNearestPlayer(npcPos, 500f);
+                // Find nearest player - 360° vision with VERY far range (whole map)
+                BasePlayer target = FindNearestPlayer(npcPos, 1000f);
                 if (target == null)
                     continue;
 
@@ -1066,82 +1064,20 @@ namespace Oxide.Plugins
                 state.LastKnownTargetPos = targetPos;
                 state.TargetPlayerId = target.userID;
 
-                // === ATTACK LOGIC ===
-                // Attack range ~1.8m (melee reach)
-                const float attackRange = 2.0f;
-                const float attackDamage = 20f;
-                const float attackCooldown = 1.2f;
-
-                if (distToTarget <= attackRange && now >= state.NextAttackTime)
-                {
-                    // ATTACK! Deal damage to player
-                    PerformZombieAttack(npc, target, attackDamage);
-                    state.NextAttackTime = now + attackCooldown;
-                    
-                    // Short pause after attack
-                    if (npc.NavAgent != null && npc.NavAgent.isOnNavMesh)
-                    {
-                        npc.NavAgent.isStopped = true;
-                    }
-                    
-                    // Resume movement after brief pause
-                    timer.Once(0.3f, () =>
-                    {
-                        if (npc != null && !npc.IsDestroyed && npc.NavAgent != null && npc.NavAgent.isOnNavMesh)
-                        {
-                            npc.NavAgent.isStopped = false;
-                        }
-                    });
-                    
-                    continue;  // Skip movement this tick
-                }
-
-                // === LUNGE LOGIC ===
-                // When getting close (4-8m), zombies do a speed burst
-                const float lungeStartDist = 8f;
-                const float lungeEndDist = 3f;
-                const float lungeDuration = 1.0f;
-                const float lungeSpeedMultiplier = 1.8f;
-
-                if (!state.IsLunging && distToTarget <= lungeStartDist && distToTarget > lungeEndDist)
-                {
-                    // Random chance to start a lunge (30% per tick when in range)
-                    if (UnityEngine.Random.Range(0f, 1f) < 0.05f)
-                    {
-                        state.IsLunging = true;
-                        state.LungeEndTime = now + lungeDuration;
-                        state.CurrentSpeed = state.BaseSpeed * lungeSpeedMultiplier;
-                        
-                        // Lunge grunt/sound effect
-                        if (!string.IsNullOrEmpty(EatCeleryEffect) && UnityEngine.Random.Range(0f, 1f) < 0.3f)
-                        {
-                            Effect.server.Run(EatCeleryEffect, npcPos + Vector3.up * 1.4f, Vector3.up, null);
-                        }
-                    }
-                }
-
-                // Check if lunge should end
-                if (state.IsLunging && (now >= state.LungeEndTime || distToTarget <= lungeEndDist))
-                {
-                    state.IsLunging = false;
-                    state.CurrentSpeed = state.BaseSpeed;
-                }
-
-                // === MOVEMENT LOGIC ===
+                // === MOVEMENT LOGIC - Walking only ===
                 if (npc.NavAgent != null)
                 {
-                    // Set speed based on current state
-                    npc.NavAgent.speed = state.CurrentSpeed;
-                    npc.NavAgent.acceleration = state.CurrentSpeed * 4f;  // Quick acceleration
-                    npc.NavAgent.angularSpeed = 360f;  // Fast turning
+                    // Walking speed - no sprinting
+                    npc.NavAgent.speed = state.BaseSpeed;
+                    npc.NavAgent.acceleration = state.BaseSpeed * 2f;  // Moderate acceleration
+                    npc.NavAgent.angularSpeed = 360f;  // 360° turning for full vision
                     
                     if (npc.NavAgent.isOnNavMesh)
                     {
-                        // Update destination every 0.3s or if target moved significantly
+                        // Update destination toward player
                         float timeSinceUpdate = now - state.LastTargetUpdateTime;
-                        float targetMoved = Vector3.Distance(targetPos, state.LastKnownTargetPos);
                         
-                        if (timeSinceUpdate > 0.3f || targetMoved > 2f)
+                        if (timeSinceUpdate > 0.5f)
                         {
                             npc.NavAgent.SetDestination(targetPos);
                             npc.NavAgent.isStopped = false;
@@ -1165,19 +1101,9 @@ namespace Oxide.Plugins
                     }
                 }
 
-                // Set last attacker to trigger aggression AI
+                // Set last attacker to trigger NPC's natural aggression/melee AI
                 npc.lastAttacker = target;
                 npc.lastDealtDamageTime = Time.time;
-
-                // === AMBIENT SOUNDS/EFFECTS ===
-                // Random zombie groans when close
-                if (distToTarget < 15f && UnityEngine.Random.Range(0f, 1f) < 0.005f)
-                {
-                    if (!string.IsNullOrEmpty(DrinkVomitEffect))
-                    {
-                        Effect.server.Run(DrinkVomitEffect, npcPos + Vector3.up * 1.4f, Vector3.up, null);
-                    }
-                }
             }
 
             // Cleanup dead zombies
@@ -1189,39 +1115,6 @@ namespace Oxide.Plugins
                     uint uid = entity.net != null ? (uint)(entity.net.ID.Value & 0xFFFFFFFF) : 0u;
                     _zombieStates.Remove(uid);
                 }
-            }
-        }
-
-        /// <summary>
-        /// Perform zombie melee attack on player with damage and VFX
-        /// </summary>
-        private void PerformZombieAttack(NPCPlayer zombie, BasePlayer target, float damage)
-        {
-            if (zombie == null || target == null || target.IsDead())
-                return;
-
-            // Deal damage
-            target.Hurt(damage, Rust.DamageType.Slash, zombie, true);
-
-            Vector3 hitPos = target.transform.position + Vector3.up * 1.0f;
-
-            // Blood slash effect
-            if (!string.IsNullOrEmpty(BloodSlashEffect))
-            {
-                Effect.server.Run(BloodSlashEffect, hitPos, Vector3.up, null);
-            }
-            
-            // Additional blood effect
-            if (!string.IsNullOrEmpty(MeleeHitEffect) && UnityEngine.Random.Range(0f, 1f) < 0.5f)
-            {
-                Effect.server.Run(MeleeHitEffect, hitPos, Vector3.up, null);
-            }
-            
-            // Swing effect from zombie
-            if (!string.IsNullOrEmpty(SwingEffect))
-            {
-                Vector3 zombiePos = zombie.transform.position + Vector3.up * 1.2f;
-                Effect.server.Run(SwingEffect, zombiePos, (target.transform.position - zombie.transform.position).normalized, null);
             }
         }
         

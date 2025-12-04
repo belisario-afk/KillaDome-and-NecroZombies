@@ -764,9 +764,11 @@ namespace Oxide.Plugins
                 return;
             }
 
+            // Set skin BEFORE spawn so it's networked correctly to clients
+            vm.skinID = cfg.MachineSkins[perkName];
+            
             vm.Spawn();
 
-            vm.skinID = cfg.MachineSkins[perkName];
             vm.shopName = $"{perkName} Machine";
 
             // Clear any sell orders and inventory: we don't use vending UI
@@ -791,10 +793,20 @@ namespace Oxide.Plugins
                 }
             }
 
-            vm.SendNetworkUpdateImmediate();
+            // Force network update to sync skin to all clients
+            vm.SendNetworkUpdateImmediate(true);
+            
+            // Additional delayed update to ensure skin shows for nearby players
+            timer.Once(0.5f, () =>
+            {
+                if (vm != null && !vm.IsDestroyed)
+                {
+                    vm.SendNetworkUpdateImmediate(true);
+                }
+            });
 
             Interface.CallHook("OnPerkVendingSpawned", vm, perkName);
-            DebugMsg($"Spawned {perkName} machine (entID={vm.net?.ID}) at {vm.transform.position}");
+            DebugMsg($"Spawned {perkName} machine (entID={vm.net?.ID}, skin={vm.skinID}) at {vm.transform.position}");
         }
 
         #endregion
