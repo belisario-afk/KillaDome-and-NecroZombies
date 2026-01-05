@@ -276,29 +276,31 @@ namespace Oxide.Plugins
                                     Vector3 hopTarget = currentPos + toPlayer * hopDistance 
                                         + Vector3.up * hopHeight;
                                     
-                                    // Raycast to find ground (reuse existing FindGroundPosition helper)
+                                    // Raycast to find ground - only hop if valid position found
                                     if (FindGroundPosition(hopTarget, out var groundPos))
                                     {
-                                        hopTarget = groundPos;
+                                        // Teleport scientist to new position
+                                        sci.MovePosition(groundPos);
+                                        sci.TransformChanged();
+                                        
+                                        // Update NavMesh destination after hop
+                                        if (sci.Brain?.Navigator != null)
+                                        {
+                                            sci.Brain.Navigator.SetDestination(target.transform.position, 
+                                                BaseNavigator.NavigationSpeed.Normal);
+                                        }
+                                        
+                                        Puts($"[DriveBySedanGangs] Scientist hopped {hopDistance}m " +
+                                             $"after being stuck for {stuckDuration:F1}s");
                                     }
-                                    
-                                    // Teleport scientist to new position
-                                    sci.MovePosition(hopTarget);
-                                    sci.TransformChanged();
-                                    sci.SendNetworkUpdateImmediate();
-                                    
-                                    // Update NavMesh destination after hop
-                                    if (sci.Brain?.Navigator != null)
+                                    else
                                     {
-                                        sci.Brain.Navigator.SetDestination(target.transform.position, 
-                                            BaseNavigator.NavigationSpeed.Normal);
+                                        // No valid ground found, skip this hop attempt
+                                        Puts($"[DriveBySedanGangs] Scientist hop failed - no valid ground found");
                                     }
-                                    
-                                    Puts($"[DriveBySedanGangs] Scientist hopped {hopDistance}m " +
-                                         $"after being stuck for {stuckDuration:F1}s");
                                 }
                                 
-                                // Reset stuck timer after hop
+                                // Reset stuck timer after hop attempt
                                 _scientistStuckTime.Remove(sci);
                             }
                         }
@@ -321,13 +323,19 @@ namespace Oxide.Plugins
 
         private bool FindGroundPosition(Vector3 position, out Vector3 groundPos)
         {
-            // Raycast down to find ground
+            // Raycast down to find ground with comprehensive layer mask
             RaycastHit hit;
-            if (Physics.Raycast(position + Vector3.up * 5f, Vector3.down, out hit, 100f, 
-                LayerMask.GetMask("Terrain", "World", "Construction")))
+            int layerMask = LayerMask.GetMask("Terrain", "World", "Construction", "Default");
+            
+            if (Physics.Raycast(position + Vector3.up * 5f, Vector3.down, out hit, 100f, layerMask))
             {
-                groundPos = hit.point;
-                return true;
+                // Additional validation: check if position is not inside a collider
+                Vector3 testPos = hit.point + Vector3.up * 0.5f;
+                if (!Physics.CheckSphere(testPos, 0.4f, layerMask))
+                {
+                    groundPos = hit.point + Vector3.up * 0.1f; // Slight offset above ground
+                    return true;
+                }
             }
             
             groundPos = position;
