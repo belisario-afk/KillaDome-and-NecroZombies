@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using Oxide.Core;
 using UnityEngine;
-using Newtonsoft.Json;
 
 namespace Oxide.Plugins
 {
@@ -32,6 +31,7 @@ namespace Oxide.Plugins
 
         private const float FollowUpdateInterval = 0.5f;
         private const float TerritoryCheckInterval = 5f;
+        private static readonly int GroundLayerMask = LayerMask.GetMask("Terrain", "World", "Construction", "Default");
 
         #endregion
 
@@ -68,18 +68,13 @@ namespace Oxide.Plugins
 
         protected override void SaveConfig() => Config.WriteObject(_config);
 
-        private void LoadGangConfig()
-        {
-            LoadConfig();
-        }
-
         #endregion
 
         #region Hooks
 
         private void OnServerInitialized()
         {
-            LoadGangConfig();
+            LoadConfig();
             timer.Every(FollowUpdateInterval, UpdateAllSedans);
             timer.Every(TerritoryCheckInterval, CheckPlayerTerritories);
             
@@ -325,20 +320,20 @@ namespace Oxide.Plugins
         {
             // Raycast down to find ground with comprehensive layer mask
             RaycastHit hit;
-            int layerMask = LayerMask.GetMask("Terrain", "World", "Construction", "Default");
             
-            if (Physics.Raycast(position + Vector3.up * 5f, Vector3.down, out hit, 100f, layerMask))
+            if (Physics.Raycast(position + Vector3.up * 5f, Vector3.down, out hit, 100f, GroundLayerMask))
             {
                 // Additional validation: check if position is not inside a collider
                 Vector3 testPos = hit.point + Vector3.up * 0.5f;
-                if (!Physics.CheckSphere(testPos, 0.4f, layerMask))
+                if (!Physics.CheckSphere(testPos, 0.4f, GroundLayerMask))
                 {
                     groundPos = hit.point + Vector3.up * 0.1f; // Slight offset above ground
                     return true;
                 }
             }
             
-            groundPos = position;
+            // No valid ground found - return failure
+            groundPos = Vector3.zero;
             return false;
         }
 
