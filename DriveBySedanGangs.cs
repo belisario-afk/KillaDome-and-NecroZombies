@@ -658,13 +658,21 @@ namespace Oxide.Plugins
         /// </summary>
         private void CheckPlayerTerritory(BasePlayer player)
         {
-            if (player == null || HoodWars == null || !HoodWars.IsLoaded)
+            if (player == null || player.IsDestroyed || HoodWars == null || !HoodWars.IsLoaded)
+                return;
+
+            // Additional check to ensure player is still valid before accessing properties
+            if (player.transform == null || !player.IsConnected || player.IsDead())
                 return;
 
             // Get player's gang from HoodWars using multiple fallback methods
             var playerGang = GetPlayerGangFromHoodWars(player);
             if (string.IsNullOrEmpty(playerGang))
                 return; // Neutral players don't trigger territory spawns
+
+            // Recheck player validity before accessing transform
+            if (player == null || player.IsDestroyed || player.transform == null)
+                return;
 
             // Get the territory the player is currently in based on their world position (X, Z coordinates)
             // HoodWars divides the map into 4 quadrants based on X and Z coordinates
@@ -682,8 +690,12 @@ namespace Oxide.Plugins
             // Debug logging to help test territory detection
             if (lastTerritory != currentTerritory)
             {
-                Puts($"[DriveBySedanGangs] DEBUG: Player {player.userID} moved from '{lastTerritory ?? "null"}' to '{currentTerritory}' at position X:{player.transform.position.x:F0} Z:{player.transform.position.z:F0}");
-                Puts($"[DriveBySedanGangs] DEBUG: Player's gang: {playerGang}, Current territory: {currentTerritory}, Is enemy territory: {currentTerritory != playerGang}");
+                // Recheck player before logging position
+                if (player != null && !player.IsDestroyed && player.transform != null)
+                {
+                    Puts($"[DriveBySedanGangs] DEBUG: Player {player.userID} moved from '{lastTerritory ?? "null"}' to '{currentTerritory}' at position X:{player.transform.position.x:F0} Z:{player.transform.position.z:F0}");
+                    Puts($"[DriveBySedanGangs] DEBUG: Player's gang: {playerGang}, Current territory: {currentTerritory}, Is enemy territory: {currentTerritory != playerGang}");
+                }
             }
 
             // Update current territory
@@ -716,6 +728,10 @@ namespace Oxide.Plugins
                     }
                 }
 
+                // Final validity check before spawning and sending message
+                if (player == null || player.IsDestroyed || player.transform == null || !player.IsConnected)
+                    return;
+
                 // Spawn a drive-by gang from the territory they entered
                 Puts($"[DriveBySedanGangs] TERRITORY SPAWN: Player {player.userID} ({playerGang}) crossed into {currentTerritory} territory at X:{player.transform.position.x:F0} Z:{player.transform.position.z:F0} - spawning drive-by!");
                 
@@ -725,8 +741,11 @@ namespace Oxide.Plugins
                 // Spawn the gang with the territory's gang name
                 EnsureGangForPlayerWithGang(player, 1, currentTerritory);
 
-                // Notify the player
-                player.ChatMessage($"<color=#ff4444>WARNING:</color> You've entered {currentTerritory} territory! A drive-by gang has been dispatched!");
+                // Notify the player (with final check)
+                if (player != null && !player.IsDestroyed && player.IsConnected)
+                {
+                    player.ChatMessage($"<color=#ff4444>WARNING:</color> You've entered {currentTerritory} territory! A drive-by gang has been dispatched!");
+                }
             }
         }
 
