@@ -466,7 +466,7 @@ namespace Oxide.Plugins
             const float stuckThreshold = 0.5f; // Movement less than 0.5m = stuck
             const float stuckTimeLimit = 3f;   // Stuck for 3 seconds = hop
             const float hopDistance = 5f;      // Hop 5 units toward player
-            const float hopHeight = 0.4f;      // Small hop for scientists
+            const float hopHeight = 0.4f;      // Small initial offset; FindGroundPosition raycasts from +30f to find actual ground
             
             float now = Time.realtimeSinceStartup;
             
@@ -529,8 +529,7 @@ namespace Oxide.Plugins
                                                 BaseNavigator.NavigationSpeed.Normal);
                                         }
                                         
-                                        Puts($"[DriveBySedanGangs] Scientist hopped {hopDistance}m " +
-                                             $"after being stuck for {stuckDuration:F1}s");
+                                        Puts($"[DriveBySedanGangs] Scientist hopped {hopDistance}m after being stuck for {stuckDuration:F1}s");
                                     }
                                     else
                                     {
