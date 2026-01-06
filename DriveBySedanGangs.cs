@@ -140,6 +140,13 @@ namespace Oxide.Plugins
         private const float TerritoryCheckInterval = 2f;  // Check player territories every 2 seconds
         private const float TerritorySpawnCooldown = 300f; // 5 minute cooldown between territory spawns
 
+        // Anti-Stuck Hop System tracking
+        private Timer _scientistHopTimer;
+        private readonly Dictionary<ScientistNPC, Vector3> _lastScientistPositions = 
+            new Dictionary<ScientistNPC, Vector3>();
+        private readonly Dictionary<ScientistNPC, float> _scientistStuckTime = 
+            new Dictionary<ScientistNPC, float>();
+
         #endregion
 
         #region Config & Gang Loading
@@ -313,6 +320,10 @@ namespace Oxide.Plugins
                     {
                         if (npc == null) continue;
 
+                        // Clean up anti-stuck hop tracking
+                        _lastScientistPositions.Remove(npc);
+                        _scientistStuckTime.Remove(npc);
+
                         if (npc.isMounted)
                         {
                             BaseMountable seat;
@@ -447,6 +458,104 @@ namespace Oxide.Plugins
             }
         }
 
+        /// <summary>
+        /// Anti-Stuck Hop System - Checks deployed scientists and teleports them if stuck
+        /// </summary>
+        private void ScientistHopTick()
+        {
+            const float stuckThreshold = 0.5f; // Movement less than 0.5m = stuck
+            const float stuckTimeLimit = 3f;   // Stuck for 3 seconds = hop
+            const float hopDistance = 5f;      // Hop 5 units toward player
+            const float hopHeight = 0.4f;      // Small hop for scientists
+            
+            float now = Time.realtimeSinceStartup;
+            
+            // Check all deployed scientists (only check on-foot, not mounted)
+            foreach (var kvp in _sedanScientists.ToArray())
+            {
+                var car = kvp.Key;
+                var sciList = kvp.Value;
+                
+                if (car == null || sciList == null) continue;
+                if (!_deployedSedans.Contains(car)) continue; // Only check deployed scientists
+                
+                // Get target player for this gang
+                if (!_driveByStates.TryGetValue(car, out var state)) continue;
+                var target = BasePlayer.FindByID(state.TargetID);
+                if (target == null || target.IsDead()) continue;
+                
+                foreach (var sci in sciList.ToArray())
+                {
+                    if (sci == null || sci.IsDestroyed || sci.isMounted) continue;
+                    
+                    Vector3 currentPos = sci.transform.position;
+                    
+                    // Check if scientist has moved since last tick
+                    if (_lastScientistPositions.TryGetValue(sci, out var lastPos))
+                    {
+                        float distMoved = Vector3.Distance(currentPos, lastPos);
+                        
+                        if (distMoved < stuckThreshold)
+                        {
+                            // Scientist hasn't moved much - increment stuck time
+                            if (!_scientistStuckTime.ContainsKey(sci))
+                                _scientistStuckTime[sci] = now;
+                            
+                            float stuckDuration = now - _scientistStuckTime[sci];
+                            
+                            if (stuckDuration >= stuckTimeLimit)
+                            {
+                                // STUCK! Perform hop toward player
+                                Vector3 toPlayer = target.transform.position - currentPos;
+                                toPlayer.y = 0f;
+                                
+                                if (toPlayer.magnitude > 1f)
+                                {
+                                    toPlayer.Normalize();
+                                    Vector3 hopTarget = currentPos + toPlayer * hopDistance 
+                                        + Vector3.up * hopHeight;
+                                    
+                                    // Raycast to find ground - only hop if valid position found
+                                    if (FindGroundPosition(hopTarget, out var groundPos))
+                                    {
+                                        // Teleport scientist to new position
+                                        sci.MovePosition(groundPos);
+                                        sci.TransformChanged();
+                                        
+                                        // Update NavMesh destination after hop
+                                        if (sci.Brain?.Navigator != null)
+                                        {
+                                            sci.Brain.Navigator.SetDestination(target.transform.position, 
+                                                BaseNavigator.NavigationSpeed.Normal);
+                                        }
+                                        
+                                        Puts($"[DriveBySedanGangs] Scientist hopped {hopDistance}m " +
+                                             $"after being stuck for {stuckDuration:F1}s");
+                                    }
+                                    else
+                                    {
+                                        // No valid ground found, skip this hop attempt
+                                        Puts($"[DriveBySedanGangs] Scientist hop failed - no valid ground found");
+                                    }
+                                }
+                                
+                                // Reset stuck timer after hop attempt
+                                _scientistStuckTime.Remove(sci);
+                            }
+                        }
+                        else
+                        {
+                            // Scientist is moving normally - reset stuck tracking
+                            _scientistStuckTime.Remove(sci);
+                        }
+                    }
+                    
+                    // Update last known position
+                    _lastScientistPositions[sci] = currentPos;
+                }
+            }
+        }
+
         #endregion
 
         #region Scientist Creation & Death Handling
@@ -553,6 +662,8 @@ namespace Oxide.Plugins
             if (npc == null) return;
 
             _scientistSeats.Remove(npc);
+            _lastScientistPositions.Remove(npc);
+            _scientistStuckTime.Remove(npc);
 
             BaseEntity ownerCar = null;
 
@@ -596,6 +707,9 @@ namespace Oxide.Plugins
             LoadGangConfig();
             timer.Every(FollowUpdateInterval, UpdateAllSedans);
             timer.Every(TerritoryCheckInterval, CheckPlayerTerritories);
+            
+            // Add scientist hop timer (check every 1 second)
+            _scientistHopTimer = timer.Every(1f, ScientistHopTick);
         }
 
         private void Unload()
@@ -634,6 +748,11 @@ namespace Oxide.Plugins
             _scientistSeats.Clear();
             _playerLastTerritory.Clear();
             _playerTerritorySpawnCooldown.Clear();
+            
+            // Clean up anti-stuck hop system
+            _scientistHopTimer?.Destroy();
+            _lastScientistPositions.Clear();
+            _scientistStuckTime.Clear();
         }
 
         /// <summary>
