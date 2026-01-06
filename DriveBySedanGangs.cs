@@ -463,10 +463,10 @@ namespace Oxide.Plugins
         /// </summary>
         private void ScientistHopTick()
         {
-            const float stuckThreshold = 0.5f; // Movement less than 0.5m = stuck
-            const float stuckTimeLimit = 3f;   // Stuck for 3 seconds = hop
-            const float hopDistance = 5f;      // Hop 5 units toward player
-            const float hopHeight = 0.4f;      // Small initial offset; FindGroundPosition raycasts from +30f to find actual ground
+            const float stuckThreshold = 0.3f; // Movement less than 0.3m = stuck
+            const float stuckTimeLimit = 5f;   // Stuck for 5 seconds = hop (increased from 3)
+            const float hopDistance = 3f;      // Hop 3 units toward player (reduced from 5)
+            const float hopHeight = 0.2f;      // Minimal initial offset for ground detection
             
             float now = Time.realtimeSinceStartup;
             
@@ -490,12 +490,37 @@ namespace Oxide.Plugins
                     
                     Vector3 currentPos = sci.transform.position;
                     
+                    // Check if scientist is actively trying to reach the target
+                    // Don't hop if they're already close or in combat
+                    float distToTarget = Vector3.Distance(currentPos, target.transform.position);
+                    if (distToTarget < MinShootDistance * 1.5f) // Don't hop if already in shooting range
+                    {
+                        _lastScientistPositions[sci] = currentPos;
+                        _scientistStuckTime.Remove(sci);
+                        continue;
+                    }
+                    
                     // Check if scientist has moved since last tick
                     if (_lastScientistPositions.TryGetValue(sci, out var lastPos))
                     {
                         float distMoved = Vector3.Distance(currentPos, lastPos);
                         
-                        if (distMoved < stuckThreshold)
+                        // Additional check: only consider stuck if NavAgent is also failing
+                        bool navMeshStuck = false;
+                        if (sci.Brain?.Navigator != null)
+                        {
+                            // If navigator thinks it's close to destination but we're far from target, likely stuck
+                            if (sci.Brain.Navigator.Agent != null && !sci.Brain.Navigator.Agent.pathPending)
+                            {
+                                float remainingDist = sci.Brain.Navigator.Agent.remainingDistance;
+                                if (remainingDist < 2f && distToTarget > MinShootDistance * 2f)
+                                {
+                                    navMeshStuck = true;
+                                }
+                            }
+                        }
+                        
+                        if (distMoved < stuckThreshold || navMeshStuck)
                         {
                             // Scientist hasn't moved much - increment stuck time
                             if (!_scientistStuckTime.ContainsKey(sci))
@@ -519,8 +544,10 @@ namespace Oxide.Plugins
                                     if (FindGroundPosition(hopTarget, out var groundPos))
                                     {
                                         // Teleport scientist to new position
-                                        sci.MovePosition(groundPos);
-                                        sci.TransformChanged();
+                                        sci.Invoke(() => {
+                                            sci.ServerPosition = groundPos;
+                                            sci.TransformChanged();
+                                        }, 0f);
                                         
                                         // Update NavMesh destination after hop
                                         if (sci.Brain?.Navigator != null)
@@ -529,12 +556,12 @@ namespace Oxide.Plugins
                                                 BaseNavigator.NavigationSpeed.Normal);
                                         }
                                         
-                                        Puts($"[DriveBySedanGangs] Scientist hopped {hopDistance}m after being stuck for {stuckDuration:F1}s");
+                                        Puts($"[DriveBySedanGangs] Scientist unstuck - moved {hopDistance}m toward target (stuck for {stuckDuration:F1}s)");
                                     }
                                     else
                                     {
                                         // No valid ground found, skip this hop attempt
-                                        Puts($"[DriveBySedanGangs] Scientist hop failed - no valid ground found");
+                                        Puts($"[DriveBySedanGangs] Scientist unstuck failed - no valid ground found");
                                     }
                                 }
                                 
