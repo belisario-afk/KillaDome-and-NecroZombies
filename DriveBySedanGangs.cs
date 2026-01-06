@@ -467,6 +467,9 @@ namespace Oxide.Plugins
             const float stuckTimeLimit = 5f;   // Stuck for 5 seconds = hop (increased from 3)
             const float hopDistance = 3f;      // Hop 3 units toward player (reduced from 5)
             const float hopHeight = 0.2f;      // Minimal initial offset for ground detection
+            const float combatRangeMultiplier = 1.5f; // Don't hop if within 1.5x shooting range
+            const float navMeshStuckDistance = 2f;    // NavAgent thinks done if remaining < 2m
+            const float navMeshStuckRangeMultiplier = 2f; // But if target > 2x shooting range, we're stuck
             
             float now = Time.realtimeSinceStartup;
             
@@ -493,7 +496,7 @@ namespace Oxide.Plugins
                     // Check if scientist is actively trying to reach the target
                     // Don't hop if they're already close or in combat
                     float distToTarget = Vector3.Distance(currentPos, target.transform.position);
-                    if (distToTarget < MinShootDistance * 1.5f) // Don't hop if already in shooting range
+                    if (distToTarget < MinShootDistance * combatRangeMultiplier) // Don't hop if already in shooting range
                     {
                         _lastScientistPositions[sci] = currentPos;
                         _scientistStuckTime.Remove(sci);
@@ -513,7 +516,7 @@ namespace Oxide.Plugins
                             if (sci.Brain.Navigator.Agent != null && !sci.Brain.Navigator.Agent.pathPending)
                             {
                                 float remainingDist = sci.Brain.Navigator.Agent.remainingDistance;
-                                if (remainingDist < 2f && distToTarget > MinShootDistance * 2f)
+                                if (remainingDist < navMeshStuckDistance && distToTarget > MinShootDistance * navMeshStuckRangeMultiplier)
                                 {
                                     navMeshStuck = true;
                                 }
